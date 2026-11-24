@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:sik3/core/models/apd_item.dart';
 import 'package:sik3/core/models/inspection_models.dart';
@@ -6,6 +8,7 @@ import 'package:sik3/core/widgets/apd_svg_icon.dart';
 import 'package:sik3/data/app_database.dart';
 import 'package:sik3/data/local_prefs.dart';
 import 'package:sik3/features/teacher/qr_scan_screen.dart';
+import 'package:sik3/features/teacher/review_draft_screen.dart';
 
 typedef ClassLoader = Future<List<SchoolClass>> Function();
 typedef ClassSaver = Future<SchoolClass> Function(SchoolClass schoolClass);
@@ -50,10 +53,15 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
   late TeacherProfile _teacherProfile;
 
   bool _loading = false;
+  bool _loadingSessions = false;
   bool _savingClass = false;
   bool _startingSession = false;
   int _nextMemoryId = 1;
+  int _sessionsLoadSeq = 0;
   String? _sessionError;
+
+  List<InspectionSession> _recentSessions = <InspectionSession>[];
+  Map<int, int> _sessionRecordCounts = <int, int>{};
 
   final Map<int, int> _classSaveSeq = <int, int>{};
   final Map<int, int> _lastPersistedSeqByClass = <int, int>{};
@@ -127,10 +135,53 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
                 .map((c) => MapEntry<int, SchoolClass>(c.id!, c)),
           );
       });
+      await _refreshSessionsForSelectedClass();
     } catch (_) {
       if (mounted) {
         setState(() => _loading = false);
       }
+    }
+  }
+
+  Future<void> _refreshSessionsForSelectedClass() async {
+    final db = widget.database;
+    final classId = _selectedClassId;
+    final seq = ++_sessionsLoadSeq;
+
+    if (db == null || classId == null) {
+      if (mounted) {
+        setState(() {
+          _recentSessions = <InspectionSession>[];
+          _sessionRecordCounts = <int, int>{};
+          _loadingSessions = false;
+        });
+      }
+      return;
+    }
+
+    if (mounted) {
+      setState(() => _loadingSessions = true);
+    }
+
+    try {
+      final sessions = await db.getSessionsForClass(classId);
+      final counts = <int, int>{};
+      for (final session in sessions) {
+        final sid = session.id;
+        if (sid != null) {
+          final records = await db.getSessionRecords(sid);
+          counts[sid] = records.length;
+        }
+      }
+      if (!mounted || seq != _sessionsLoadSeq) return;
+      setState(() {
+        _recentSessions = sessions;
+        _sessionRecordCounts = counts;
+        _loadingSessions = false;
+      });
+    } on Object {
+      if (!mounted || seq != _sessionsLoadSeq) return;
+      setState(() => _loadingSessions = false);
     }
   }
 
@@ -315,6 +366,7 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
         _selectedClassId = saved.id;
         _draftRequiredApd = Set<ApdItem>.from(saved.requiredApd);
       });
+      await _refreshSessionsForSelectedClass();
     } catch (_) {
       _showErrorSnackBar('Gagal menyimpan data kelas. Silakan coba lagi.');
     } finally {
@@ -378,6 +430,96 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
         _selectedClassId = nextList.isNotEmpty ? nextList.first.id : null;
       }
     });
+    await _refreshSessionsForSelectedClass();
+  }
+
+  Future<void> _openExistingSession(
+    SchoolClass schoolClass,
+    InspectionSession session,
+  ) async {
+    final db = widget.database;
+    if (db == null || session.id == null) return;
+
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => ReviewDraftScreen(
+          schoolClass: schoolClass,
+          session: session,
+          database: db,
+          prefs: widget.prefs,
+        ),
+      ),
+    );
+
+    if (mounted) {
+      await _refreshSessionsForSelectedClass();
+    }
+  }
+
+  Future<void> _confirmDeleteSession(InspectionSession session) async {
+    final db = widget.database;
+    final sessionId = session.id;
+    if (db == null || sessionId == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Hapus Sesi Inspeksi?'),
+        content: Text(
+          'Sesi "${session.subjectName}" beserta seluruh catatan siswa dan foto draft-nya akan dihapus permanen.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            key: const ValueKey<String>('confirm_delete_session_button'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Sik3Colors.statusMissing,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Hapus Sesi'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await db.deleteSession(sessionId);
+      if (!mounted) return;
+      await _refreshSessionsForSelectedClass();
+    } on Object {
+      _showErrorSnackBar('Gagal menghapus sesi inspeksi. Silakan coba lagi.');
+    }
+  }
+
+  Future<String?> _promptSessionSubjectSheet(SchoolClass schoolClass) {
+    final prefill = _subjectController.text.trim().isNotEmpty
+        ? _subjectController.text.trim()
+        : (_recentSessions.isNotEmpty
+              ? _recentSessions.first.subjectName
+              : '');
+
+    return showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Sik3Colors.cardSurface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(Sik3Radius.outer),
+        ),
+      ),
+      builder: (_) => _StartSessionSubjectSheet(
+        className: schoolClass.name,
+        requiredCount: schoolClass.requiredApd.length,
+        initialSubject: prefill,
+      ),
+    );
   }
 
   Future<void> _startInspectionSession() async {
@@ -399,6 +541,16 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
       return;
     }
 
+    final db = widget.database;
+    var subjectText = _subjectController.text.trim();
+
+    if (db != null && widget.onStartSession == null) {
+      final pickedSubject = await _promptSessionSubjectSheet(selectedClass);
+      if (pickedSubject == null || !mounted) return;
+      subjectText = pickedSubject.trim();
+      _subjectController.text = subjectText;
+    }
+
     setState(() {
       _startingSession = true;
       _sessionError = null;
@@ -406,7 +558,6 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
 
     try {
       final profile = widget.prefs.getTeacherProfile();
-      final subjectText = _subjectController.text.trim();
       var sessionDraft = InspectionSession(
         classId: selectedClass.id ?? 0,
         subjectName: subjectText.isEmpty ? 'Praktik Bengkel' : subjectText,
@@ -420,7 +571,6 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
         status: 'draft',
       );
 
-      final db = widget.database;
       if (db != null && selectedClass.id != null) {
         try {
           final sessionId = await db.createSession(sessionDraft);
@@ -435,11 +585,32 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
 
       if (widget.onStartSession != null) {
         await widget.onStartSession!(context, selectedClass, sessionDraft);
+        if (mounted && db != null) {
+          await _refreshSessionsForSelectedClass();
+        }
         return;
       }
 
-      // Standalone Task 3 flow before Task 6 connects ReviewDraftScreen:
-      // lets teacher verify QR scanning and manual fallback right away.
+      if (db != null && sessionDraft.id != null) {
+        await _refreshSessionsForSelectedClass();
+        if (!mounted) return;
+        await Navigator.of(context).push<void>(
+          MaterialPageRoute<void>(
+            builder: (_) => ReviewDraftScreen(
+              schoolClass: selectedClass,
+              session: sessionDraft,
+              database: db,
+              prefs: widget.prefs,
+            ),
+          ),
+        );
+        if (mounted) {
+          await _refreshSessionsForSelectedClass();
+        }
+        return;
+      }
+
+      // Fallback when running without SQLite database (unit tests/preview):
       final scannedStudent = await openStudentQrScanner(
         context,
         defaultClassName: selectedClass.name,
@@ -564,6 +735,7 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
                                 _selectedClassId = _classes[i].id;
                                 _sessionError = null;
                               });
+                              unawaited(_refreshSessionsForSelectedClass());
                             },
                             onEdit: () =>
                                 _openClassFormSheet(existing: _classes[i]),
@@ -678,6 +850,84 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
                     icon: const Icon(Icons.qr_code_scanner_outlined),
                     label: const Text('Mulai Sesi Inspeksi'),
                   ),
+                  if (widget.database != null && selectedClass != null) ...<Widget>[
+                    const SizedBox(height: Sik3Spacing.xl),
+                    Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: Text(
+                            'Sesi Inspeksi — ${selectedClass.name}',
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              color: Sik3Colors.textPrimary,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: Sik3Spacing.sm,
+                            vertical: Sik3Spacing.xs,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Sik3Colors.navy.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(Sik3Radius.chip),
+                          ),
+                          child: Text(
+                            '${_recentSessions.length} Sesi',
+                            style: Sik3Typography.tabular(
+                              theme.textTheme.labelMedium?.copyWith(
+                                    color: Sik3Colors.navy,
+                                    fontWeight: FontWeight.w700,
+                                  ) ??
+                                  const TextStyle(fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: Sik3Spacing.sm),
+                    if (_loadingSessions)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: Sik3Spacing.lg),
+                        child: Center(child: CircularProgressIndicator()),
+                      )
+                    else if (_recentSessions.isEmpty)
+                      Container(
+                        padding: const EdgeInsets.all(Sik3Spacing.md),
+                        decoration: BoxDecoration(
+                          color: Sik3Colors.cardSurface,
+                          borderRadius: BorderRadius.circular(Sik3Radius.outer),
+                          border: Border.all(color: Sik3Colors.border),
+                        ),
+                        child: Text(
+                          'Belum ada sesi inspeksi untuk kelas ini. Ketuk Mulai Sesi Inspeksi untuk membuat draft baru.',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: Sik3Colors.textSecondary,
+                          ),
+                        ),
+                      )
+                    else
+                      Column(
+                        children: <Widget>[
+                          for (var i = 0; i < _recentSessions.length; i++) ...<Widget>[
+                            _SessionHistoryCard(
+                              session: _recentSessions[i],
+                              studentCount:
+                                  _sessionRecordCounts[_recentSessions[i].id] ??
+                                  0,
+                              onOpen: () => _openExistingSession(
+                                selectedClass,
+                                _recentSessions[i],
+                              ),
+                              onDelete: () =>
+                                  _confirmDeleteSession(_recentSessions[i]),
+                            ),
+                            if (i < _recentSessions.length - 1)
+                              const SizedBox(height: Sik3Spacing.sm),
+                          ],
+                        ],
+                      ),
+                  ],
                 ],
               ),
             ),
@@ -1500,6 +1750,235 @@ class _ClassFormSheetState extends State<_ClassFormSheet> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SessionHistoryCard extends StatelessWidget {
+  const _SessionHistoryCard({
+    required this.session,
+    required this.studentCount,
+    required this.onOpen,
+    required this.onDelete,
+  });
+
+  final InspectionSession session;
+  final int studentCount;
+  final VoidCallback onOpen;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isExported = session.status == 'exported';
+    final badgeColor =
+        isExported ? Sik3Colors.statusPassed : Sik3Colors.statusReview;
+
+    return Material(
+      key: ValueKey<String>('resume_session_${session.id}'),
+      color: Sik3Colors.cardSurface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(Sik3Radius.outer),
+        side: const BorderSide(color: Sik3Colors.border),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onOpen,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(
+            Sik3Spacing.md,
+            Sik3Spacing.sm,
+            Sik3Spacing.xs,
+            Sik3Spacing.sm,
+          ),
+          child: Row(
+            children: <Widget>[
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: Sik3Colors.navy.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(Sik3Radius.inner),
+                ),
+                alignment: Alignment.center,
+                child: const Icon(
+                  Icons.assignment_outlined,
+                  color: Sik3Colors.navy,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: Sik3Spacing.md),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: Text(
+                            session.subjectName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.titleSmall?.copyWith(
+                              color: Sik3Colors.textPrimary,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: Sik3Spacing.sm),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: Sik3Spacing.sm,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: badgeColor.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(Sik3Radius.chip),
+                          ),
+                          child: Text(
+                            isExported ? 'Diekspor' : 'Draft',
+                            style: TextStyle(
+                              color: badgeColor,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${formatSessionDateTime(session.sessionDate)} · $studentCount Siswa · ${session.requiredApd.length}/6 APD',
+                      style: Sik3Typography.tabular(
+                        theme.textTheme.bodySmall?.copyWith(
+                              color: Sik3Colors.textSecondary,
+                            ) ??
+                            const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                key: ValueKey<String>('delete_session_${session.id}'),
+                tooltip: 'Hapus Sesi',
+                onPressed: onDelete,
+                icon: const Icon(
+                  Icons.delete_outline,
+                  color: Sik3Colors.statusMissing,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StartSessionSubjectSheet extends StatefulWidget {
+  const _StartSessionSubjectSheet({
+    required this.className,
+    required this.requiredCount,
+    required this.initialSubject,
+  });
+
+  final String className;
+  final int requiredCount;
+  final String initialSubject;
+
+  @override
+  State<_StartSessionSubjectSheet> createState() =>
+      _StartSessionSubjectSheetState();
+}
+
+class _StartSessionSubjectSheetState extends State<_StartSessionSubjectSheet> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialSubject);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _confirm() {
+    Navigator.of(context).pop(_controller.text.trim());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottomInset),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(
+          Sik3Spacing.lg,
+          Sik3Spacing.lg,
+          Sik3Spacing.lg,
+          Sik3Spacing.xl,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Text(
+              'Mulai Sesi Inspeksi — ${widget.className}',
+              style: theme.textTheme.titleLarge?.copyWith(
+                color: Sik3Colors.textPrimary,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: Sik3Spacing.xs),
+            Text(
+              'Masukkan nama mata praktik untuk kop laporan (${widget.requiredCount}/6 APD wajib aktif).',
+              style: Sik3Typography.tabular(
+                theme.textTheme.bodyMedium?.copyWith(
+                      color: Sik3Colors.textSecondary,
+                    ) ??
+                    const TextStyle(fontSize: 14),
+              ),
+            ),
+            const SizedBox(height: Sik3Spacing.lg),
+            TextField(
+              key: const ValueKey<String>('start_session_subject_sheet_field'),
+              controller: _controller,
+              autofocus: true,
+              textCapitalization: TextCapitalization.words,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _confirm(),
+              decoration: const InputDecoration(
+                labelText: 'Mata Praktik',
+                hintText: 'Contoh: Teknik Pemesinan Bubut (default: Praktik Bengkel)',
+              ),
+            ),
+            const SizedBox(height: Sik3Spacing.lg),
+            FilledButton.icon(
+              key: const ValueKey<String>('confirm_start_session_button'),
+              onPressed: _confirm,
+              style: FilledButton.styleFrom(
+                backgroundColor: Sik3Colors.amber,
+                foregroundColor: Sik3Colors.navy,
+                minimumSize: const Size(double.infinity, 52),
+              ),
+              icon: const Icon(Icons.play_arrow_outlined),
+              label: const Text('Buka Draft & Mulai Scan'),
+            ),
+            const SizedBox(height: Sik3Spacing.sm),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(null),
+              child: const Text('Batal'),
+            ),
+          ],
         ),
       ),
     );
