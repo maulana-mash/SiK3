@@ -7,6 +7,7 @@ import 'package:sik3/data/local_prefs.dart';
 import 'package:sik3/data/qr_identity_codec.dart';
 import 'package:sik3/features/onboarding/role_gate_screen.dart';
 import 'package:sik3/features/student/student_qr_screen.dart';
+import 'package:sik3/features/teacher/class_setup_screen.dart';
 import 'package:sik3/main.dart';
 
 void main() {
@@ -76,7 +77,7 @@ void main() {
 
         expect(prefs.hasTeacherPin(), isTrue);
         expect(prefs.getRole(), AppRole.teacher);
-        expect(find.byType(TeacherHomePlaceholder), findsOneWidget);
+        expect(find.byType(ClassSetupScreen), findsOneWidget);
 
         // Switch role returns to RoleGateScreen.
         await tester.tap(
@@ -103,7 +104,7 @@ void main() {
           find.text('PIN salah. Periksa kembali PIN 4-6 digit Anda.'),
           findsOneWidget,
         );
-        expect(find.byType(TeacherHomePlaceholder), findsNothing);
+        expect(find.byType(ClassSetupScreen), findsNothing);
 
         // Correct PIN enters teacher mode.
         await tester.enterText(
@@ -112,7 +113,7 @@ void main() {
         );
         await tester.tap(find.byKey(const ValueKey<String>('pin_submit_button')));
         await tester.pumpAndSettle();
-        expect(find.byType(TeacherHomePlaceholder), findsOneWidget);
+        expect(find.byType(ClassSetupScreen), findsOneWidget);
       },
     );
 
@@ -133,7 +134,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Custom Teacher Home'), findsOneWidget);
-      expect(find.byType(TeacherHomePlaceholder), findsNothing);
+      expect(find.byType(ClassSetupScreen), findsNothing);
     });
   });
 
