@@ -1,0 +1,27 @@
+{
+  "model_name": "yolov8n_ppe_public_placeholder",
+  "input_size": 640,
+  "confidence_threshold": 0.70,
+  "iou_threshold": 0.45,
+  "model_classes": [
+    "helmet",
+    "goggles",
+    "mask",
+    "gloves",
+    "boots"
+  ],
+  "label_to_apd": {
+    "helmet": "helm",
+    "hardhat": "helm",
+    "goggles": "kacamata",
+    "safety-glass": "kacamata",
+    "glasses": "kacamata",
+    "mask": "masker",
+    "gloves": "sarung_tangan",
+    "boots": "sepatu_bengkel",
+    "safety-shoes": "sepatu_bengkel",
+    "safety_shoe": "sepatu_bengkel",
+    "shoes": "sepatu_bengkel"
+  },
+  "notes": "baju_praktik sengaja tidak dipetakan ke safety-vest karena wearpack bengkel SMK berbeda dari rompi proyek; item yang tidak dipetakan otomatis berstatus needs_review."
+}
