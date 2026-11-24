@@ -1,0 +1,16 @@
+{
+  "project": "SiK3",
+  "mode": "sdd",
+  "specPath": "docs/superpowers/specs/2026-11-24-sik3-design.md",
+  "planPath": "docs/superpowers/plans/2026-11-24-sik3-implementation.md",
+  "branch": "feat/sik3-mvp",
+  "platform": "android",
+  "packageId": "id.sch.sik3",
+  "minSdk": 24,
+  "targetSdk": 35,
+  "workflow": {
+    "tdd": true,
+    "commitPerTask": true,
+    "zeroEmoji": true
+  }
+}
