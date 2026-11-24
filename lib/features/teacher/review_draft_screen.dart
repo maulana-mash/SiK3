@@ -13,6 +13,7 @@ import 'package:sik3/data/qr_identity_codec.dart';
 import 'package:sik3/features/teacher/apd_zone_scan_screen.dart';
 import 'package:sik3/features/teacher/pdf_preview_screen.dart';
 import 'package:sik3/features/teacher/qr_scan_screen.dart';
+import 'package:sik3/ml/online_ai_verifier.dart';
 
 typedef StudentQrScannerOpener = Future<StudentIdentity?> Function(
   BuildContext context, {
@@ -96,6 +97,8 @@ class ReviewDraftScreen extends StatefulWidget {
     required this.session,
     required this.database,
     this.prefs,
+    this.aiEndpointUrl,
+    this.aiVerifier,
     this.openQrScanner,
     this.openZoneScanner,
     this.onVerifyWithAi,
@@ -106,6 +109,8 @@ class ReviewDraftScreen extends StatefulWidget {
   final InspectionSession session;
   final AppDatabase database;
   final LocalPrefs? prefs;
+  final String? aiEndpointUrl;
+  final OnlineAiVerifier? aiVerifier;
   final StudentQrScannerOpener? openQrScanner;
   final StudentZoneScanOpener? openZoneScanner;
   final Future<void> Function(ScanRecord record)? onVerifyWithAi;
@@ -137,6 +142,15 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
   bool get _hasAnyDraftPhotos => _records.any(
     (record) => record.upperPhotoPath != null || record.lowerPhotoPath != null,
   );
+
+  String get _effectiveAiEndpointUrl =>
+      (widget.aiEndpointUrl ??
+              widget.prefs?.getTeacherProfile().aiEndpointUrl ??
+              '')
+          .trim();
+
+  bool get _hasAiVerification =>
+      widget.onVerifyWithAi != null || _effectiveAiEndpointUrl.isNotEmpty;
 
   Future<void> _drainPendingWrites() async {
     if (_writeQueueByNisn.isEmpty) return;
@@ -344,26 +358,123 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
   }
 
   Future<void> _verifyStudentWithAi(ScanRecord record) async {
-    final callback = widget.onVerifyWithAi;
-    if (callback == null || _busyAction || _verifyingNisn != null) return;
+    if (!_hasAiVerification || _busyAction || _verifyingNisn != null) return;
 
-    setState(() => _verifyingNisn = record.nisn);
-    try {
-      await _drainPendingWrites();
-      if (!mounted) return;
-      final latestIdx = _records.indexWhere((r) => r.nisn == record.nisn);
-      final target = latestIdx >= 0 ? _records[latestIdx] : record;
-      await callback(target);
-      if (!mounted) return;
-      await _loadSessionData();
-    } on Object {
+    final callback = widget.onVerifyWithAi;
+    if (callback != null) {
+      setState(() => _verifyingNisn = record.nisn);
+      try {
+        await _drainPendingWrites();
+        if (!mounted) return;
+        final latestIdx = _records.indexWhere((r) => r.nisn == record.nisn);
+        final target = latestIdx >= 0 ? _records[latestIdx] : record;
+        await callback(target);
+        if (!mounted) return;
+        await _loadSessionData();
+      } on Object {
+        _showSnackBar(
+          'Verifikasi AI tambahan gagal. Draft lokal Anda tetap aman.',
+          backgroundColor: Sik3Colors.statusMissing,
+        );
+      } finally {
+        if (mounted) {
+          setState(() => _verifyingNisn = null);
+        }
+      }
+      return;
+    }
+
+    await _drainPendingWrites();
+    if (!mounted) return;
+    final latestIdx = _records.indexWhere((r) => r.nisn == record.nisn);
+    final target = latestIdx >= 0 ? _records[latestIdx] : record;
+
+    if (target.upperPhotoPath == null && target.lowerPhotoPath == null) {
       _showSnackBar(
+        'Foto bukti siswa belum tersedia atau sudah dibersihkan. Lakukan Scan Ulang terlebih dahulu.',
+      );
+      return;
+    }
+
+    setState(() => _verifyingNisn = target.nisn);
+    OnlineVerifyResult? verifyResult;
+    try {
+      final verifier = widget.aiVerifier ?? OnlineAiVerifier();
+      verifyResult = await verifier.verify(
+        upperPhotoPath: target.upperPhotoPath,
+        lowerPhotoPath: target.lowerPhotoPath,
+        requiredItems: _session.requiredApd,
+        endpointUrl: _effectiveAiEndpointUrl,
+      );
+    } on Object {
+      verifyResult = const VerifyFailure(
         'Verifikasi AI tambahan gagal. Draft lokal Anda tetap aman.',
-        backgroundColor: Sik3Colors.statusMissing,
       );
     } finally {
       if (mounted) {
         setState(() => _verifyingNisn = null);
+      }
+    }
+
+    if (!mounted) return;
+
+    switch (verifyResult) {
+      case VerifyFailure(:final message):
+        _showSnackBar(message, backgroundColor: Sik3Colors.navy);
+      case VerifySuccess(:final results, :final summary):
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (_) => _AiVerifyConfirmationDialog(
+            record: target,
+            requiredApd: _session.orderedRequiredApd,
+            aiResults: results,
+            summary: summary,
+          ),
+        );
+        if (confirmed != true || !mounted) return;
+        await _applyConfirmedAiResults(target, results);
+    }
+  }
+
+  Future<void> _applyConfirmedAiResults(
+    ScanRecord target,
+    Map<ApdItem, ApdCheckResult> aiResults,
+  ) async {
+    if (_busyAction) return;
+    setState(() => _busyAction = true);
+    try {
+      await _drainPendingWrites();
+      if (!mounted) return;
+      final latestIdx = _records.indexWhere((r) => r.nisn == target.nisn);
+      final base = latestIdx >= 0 ? _records[latestIdx] : target;
+
+      final merged = Map<ApdItem, ApdCheckResult>.from(base.apdResults);
+      for (final entry in aiResults.entries) {
+        merged[entry.key] = entry.value.copyWith(manualOverride: false);
+      }
+      final stillHasManual = merged.values.any((c) => c.manualOverride);
+      final updated = base.copyWith(
+        apdResults: Map<ApdItem, ApdCheckResult>.unmodifiable(merged),
+        isManualOverride: stillHasManual,
+        isAiVerified: true,
+      );
+
+      await widget.database.upsertScanRecord(updated);
+      if (!mounted) return;
+      await _loadSessionData();
+      if (!mounted) return;
+      _showSnackBar(
+        'Hasil Verifikasi AI untuk ${base.studentName} diterapkan ke draft.',
+        backgroundColor: Sik3Colors.statusPassed,
+      );
+    } on Object {
+      _showSnackBar(
+        'Gagal menerapkan hasil Verifikasi AI. Draft lokal Anda tetap aman.',
+        backgroundColor: Sik3Colors.statusMissing,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _busyAction = false);
       }
     }
   }
@@ -602,7 +713,7 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
                                 record: record,
                                 requiredApd: _session.orderedRequiredApd,
                                 requiredApdSet: _session.requiredApd,
-                                showVerifyAi: widget.onVerifyWithAi != null,
+                                showVerifyAi: _hasAiVerification,
                                 isVerifyingAi: isThisVerifying,
                                 onToggleApd: canToggleApd
                                     ? (item) => _toggleApdChip(nisn, item)
@@ -616,8 +727,7 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
                                     ? null
                                     : () => _rescanStudent(record),
                                 onVerifyAi:
-                                    (widget.onVerifyWithAi != null &&
-                                        !isActionLocked)
+                                    (_hasAiVerification && !isActionLocked)
                                     ? () => _verifyStudentWithAi(record)
                                     : null,
                               );
@@ -1071,7 +1181,9 @@ class _StudentDraftCard extends StatelessWidget {
                         )
                       : const Icon(Icons.auto_fix_high_outlined, size: 18),
                   label: Text(
-                    isVerifyingAi ? 'Memverifikasi...' : 'Verifikasi AI',
+                    isVerifyingAi
+                        ? 'Memverifikasi...'
+                        : 'Verifikasi AI Tambahan',
                   ),
                 ),
             ],
@@ -1591,6 +1703,209 @@ class _MissingPhotoPlaceholder extends StatelessWidget {
             textAlign: TextAlign.center,
             style: TextStyle(color: Sik3Colors.textSecondary, fontSize: 13),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AiVerifyConfirmationDialog extends StatelessWidget {
+  const _AiVerifyConfirmationDialog({
+    required this.record,
+    required this.requiredApd,
+    required this.aiResults,
+    required this.summary,
+  });
+
+  final ScanRecord record;
+  final List<ApdItem> requiredApd;
+  final Map<ApdItem, ApdCheckResult> aiResults;
+  final String summary;
+
+  Color _statusColor(ApdStatus status) {
+    switch (status) {
+      case ApdStatus.detected:
+        return Sik3Colors.statusPassed;
+      case ApdStatus.needsReview:
+        return Sik3Colors.statusReview;
+      case ApdStatus.missing:
+        return Sik3Colors.statusMissing;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final trimmedSummary = summary.trim();
+
+    return AlertDialog(
+      backgroundColor: Sik3Colors.cardSurface,
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(Sik3Radius.outer),
+      ),
+      title: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Text(
+            'Konfirmasi Hasil Verifikasi AI',
+            style: theme.textTheme.titleMedium?.copyWith(
+              color: Sik3Colors.textPrimary,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: Sik3Spacing.xs),
+          Text(
+            '${record.studentName} · No. ${record.attendanceNo}',
+            style: Sik3Typography.tabular(
+              theme.textTheme.bodySmall?.copyWith(
+                    color: Sik3Colors.textSecondary,
+                  ) ??
+                  const TextStyle(fontSize: 12),
+            ),
+          ),
+        ],
+      ),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 440),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              if (trimmedSummary.isNotEmpty) ...<Widget>[
+                Container(
+                  padding: const EdgeInsets.all(Sik3Spacing.md),
+                  decoration: BoxDecoration(
+                    color: Sik3Colors.navy.withValues(alpha: 0.06),
+                    borderRadius: BorderRadius.circular(Sik3Radius.inner),
+                    border: Border.all(
+                      color: Sik3Colors.navy.withValues(alpha: 0.16),
+                    ),
+                  ),
+                  child: Text(
+                    trimmedSummary,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: Sik3Colors.textPrimary,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: Sik3Spacing.md),
+              ],
+              for (var i = 0; i < requiredApd.length; i++) ...<Widget>[
+                _buildComparisonRow(context, requiredApd[i]),
+                if (i < requiredApd.length - 1)
+                  const SizedBox(height: Sik3Spacing.sm),
+              ],
+              const SizedBox(height: Sik3Spacing.md),
+              Text(
+                'Draft lokal hanya diperbarui setelah Anda mengetuk Terapkan Hasil AI.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: Sik3Colors.textSecondary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          key: const ValueKey<String>('cancel_apply_ai_button'),
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Batal'),
+        ),
+        FilledButton(
+          key: const ValueKey<String>('confirm_apply_ai_button'),
+          onPressed: () => Navigator.of(context).pop(true),
+          style: FilledButton.styleFrom(
+            backgroundColor: Sik3Colors.amber,
+            foregroundColor: Sik3Colors.navy,
+          ),
+          child: const Text('Terapkan Hasil AI'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildComparisonRow(BuildContext context, ApdItem item) {
+    final theme = Theme.of(context);
+    final previousStatus =
+        record.apdResults[item]?.status ?? ApdStatus.needsReview;
+    final aiResult =
+        aiResults[item] ??
+        ApdCheckResult(item: item, status: ApdStatus.needsReview);
+    final accent = _statusColor(aiResult.status);
+    final confidenceText = aiResult.confidence != null
+        ? ' ${(aiResult.confidence! * 100).round()}%'
+        : '';
+    final note = aiResult.note?.trim() ?? '';
+
+    return Container(
+      padding: const EdgeInsets.all(Sik3Spacing.md),
+      decoration: BoxDecoration(
+        color: Sik3Colors.surfaceLight,
+        borderRadius: BorderRadius.circular(Sik3Radius.inner),
+        border: Border.all(color: Sik3Colors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              ApdSvgIcon(item: item, size: 20, color: accent),
+              const SizedBox(width: Sik3Spacing.sm),
+              Expanded(
+                child: Text(
+                  item.labelId,
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: Sik3Colors.textPrimary,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: Sik3Spacing.sm,
+                  vertical: 3,
+                ),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(Sik3Radius.chip),
+                  border: Border.all(color: accent.withValues(alpha: 0.35)),
+                ),
+                child: Text(
+                  '${aiResult.status.labelId}$confidenceText',
+                  style: Sik3Typography.tabular(
+                    TextStyle(
+                      color: accent,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: Sik3Spacing.xs),
+          Text(
+            'Sebelumnya: ${previousStatus.labelId}',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: Sik3Colors.textSecondary,
+              fontSize: 11.5,
+            ),
+          ),
+          if (note.isNotEmpty) ...<Widget>[
+            const SizedBox(height: Sik3Spacing.xs),
+            Text(
+              note,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: Sik3Colors.textPrimary,
+                height: 1.35,
+              ),
+            ),
+          ],
         ],
       ),
     );

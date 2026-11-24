@@ -50,3 +50,9 @@ app.*.map.json
 # Superpowers session artifacts
 .superpowers/
 
+# Optional online Vision AI subsystem (Next.js / Vercel)
+api-verify-apd/node_modules/
+api-verify-apd/.next/
+api-verify-apd/.env*.local
+
+

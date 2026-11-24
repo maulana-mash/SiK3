@@ -440,6 +440,7 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
     final db = widget.database;
     if (db == null || session.id == null) return;
 
+    final aiEndpointUrl = widget.prefs.getTeacherProfile().aiEndpointUrl;
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (_) => ReviewDraftScreen(
@@ -447,6 +448,7 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
           session: session,
           database: db,
           prefs: widget.prefs,
+          aiEndpointUrl: aiEndpointUrl,
         ),
       ),
     );
@@ -601,6 +603,7 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
               session: sessionDraft,
               database: db,
               prefs: widget.prefs,
+              aiEndpointUrl: profile.aiEndpointUrl,
             ),
           ),
         );

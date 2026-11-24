@@ -56,7 +56,9 @@ class PdfPreviewScreen extends StatelessWidget {
           ],
         ),
       ),
-      body: PdfPreview(
+      body: SafeArea(
+        top: false,
+        child: PdfPreview(
         initialPageFormat: PdfPageFormat.a4,
         pdfFileName: fileName,
         allowPrinting: true,
@@ -142,6 +144,7 @@ class PdfPreviewScreen extends StatelessWidget {
               ],
             ),
           ),
+        ),
         ),
       ),
     );
