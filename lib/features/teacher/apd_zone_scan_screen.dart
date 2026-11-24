@@ -212,8 +212,10 @@ class _ApdZoneScanScreenState extends State<ApdZoneScanScreen>
     if (controller != null) {
       unawaited(_disposeCameraSafely(controller));
     }
-    if (_ownsDetector && _detector != null) {
-      unawaited(_detector!.dispose());
+    final detector = _detector;
+    _detector = null;
+    if (_ownsDetector && detector != null) {
+      unawaited(detector.dispose());
     }
     if (!_savedRecord) {
       unawaited(_deleteTempFileSafely(_capturedUpperPath));
@@ -259,6 +261,10 @@ class _ApdZoneScanScreenState extends State<ApdZoneScanScreen>
         final created = await TflitePpeDetector.create(
           labelConfig: widget.labelConfig,
         );
+        if (!mounted) {
+          unawaited(created.dispose());
+          return;
+        }
         _detector = created;
         _labelConfig = widget.labelConfig ?? created.labelConfig;
       }
@@ -392,7 +398,12 @@ class _ApdZoneScanScreenState extends State<ApdZoneScanScreen>
     }
   }
 
-  void _showSnackBar(String message, {Color backgroundColor = Sik3Colors.navy}) {
+  void _showSnackBar(
+    String message, {
+    Color backgroundColor = Sik3Colors.navy,
+    SnackBarAction? action,
+    Duration duration = const Duration(seconds: 4),
+  }) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
@@ -400,6 +411,8 @@ class _ApdZoneScanScreenState extends State<ApdZoneScanScreen>
         SnackBar(
           content: Text(message),
           backgroundColor: backgroundColor,
+          duration: duration,
+          action: action,
         ),
       );
   }
@@ -465,6 +478,11 @@ class _ApdZoneScanScreenState extends State<ApdZoneScanScreen>
       }
 
       final savedPath = await _saveCompressedEvidenceFile(rawBytes, currentZone);
+      if (!mounted) {
+        unawaited(_deleteTempFileSafely(savedPath));
+        return;
+      }
+
       if (currentZone == ScanZone.upper) {
         final previous = _capturedUpperPath;
         _capturedUpperPath = savedPath;
@@ -478,8 +496,6 @@ class _ApdZoneScanScreenState extends State<ApdZoneScanScreen>
           unawaited(_deleteTempFileSafely(previous));
         }
       }
-
-      if (!mounted) return;
 
       if (_zoneIndex + 1 < _zones.length) {
         setState(() {
@@ -496,6 +512,12 @@ class _ApdZoneScanScreenState extends State<ApdZoneScanScreen>
       _showSnackBar(
         'Gagal mengambil foto. Coba lagi atau gunakan penilaian manual tanpa foto.',
         backgroundColor: Sik3Colors.statusMissing,
+        duration: const Duration(seconds: 6),
+        action: SnackBarAction(
+          label: 'Manual',
+          textColor: Sik3Colors.amber,
+          onPressed: _continueManualWithoutPhoto,
+        ),
       );
     }
   }
@@ -636,8 +658,10 @@ class _ApdZoneScanScreenState extends State<ApdZoneScanScreen>
         _detectorReady && !(_detector?.isModelLoaded ?? false);
     final motionDuration = Sik3Motion.resolve(context, Sik3Motion.fast);
 
-    return Scaffold(
-      backgroundColor: Sik3Colors.scannerDark,
+    return PopScope(
+      canPop: !_isProcessing,
+      child: Scaffold(
+        backgroundColor: Sik3Colors.scannerDark,
       appBar: AppBar(
         backgroundColor: Sik3Colors.scannerDark,
         foregroundColor: Colors.white,
@@ -781,6 +805,7 @@ class _ApdZoneScanScreenState extends State<ApdZoneScanScreen>
             if (_cameraReady && _cameraError == null) _buildBottomControls(),
           ],
         ),
+      ),
       ),
     );
   }

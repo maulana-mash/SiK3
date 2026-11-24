@@ -196,8 +196,12 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
       );
   }
 
-  Future<void> _toggleApdChip(ScanRecord record, ApdItem item) async {
-    final nisn = record.nisn;
+  Future<void> _toggleApdChip(String nisn, ApdItem item) async {
+    if (_busyAction || _verifyingNisn == nisn) return;
+    final recordIndex = _records.indexWhere((r) => r.nisn == nisn);
+    if (recordIndex < 0) return;
+    final record = _records[recordIndex];
+
     final currentCheck =
         record.apdResults[item] ??
         ApdCheckResult(item: item, status: ApdStatus.needsReview);
@@ -266,7 +270,7 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
   }
 
   Future<void> _scanNewStudent() async {
-    if (_busyAction) return;
+    if (_busyAction || _verifyingNisn != null) return;
     setState(() => _busyAction = true);
     try {
       final qrOpener = widget.openQrScanner ?? openStudentQrScanner;
@@ -285,7 +289,7 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
   }
 
   Future<void> _rescanStudent(ScanRecord record) async {
-    if (_busyAction) return;
+    if (_busyAction || _verifyingNisn != null) return;
     setState(() => _busyAction = true);
     try {
       final identity = StudentIdentity(
@@ -340,12 +344,15 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
 
   Future<void> _verifyStudentWithAi(ScanRecord record) async {
     final callback = widget.onVerifyWithAi;
-    if (callback == null || _verifyingNisn != null) return;
+    if (callback == null || _busyAction || _verifyingNisn != null) return;
 
     setState(() => _verifyingNisn = record.nisn);
     try {
       await _drainPendingWrites();
-      await callback(record);
+      if (!mounted) return;
+      final latestIdx = _records.indexWhere((r) => r.nisn == record.nisn);
+      final target = latestIdx >= 0 ? _records[latestIdx] : record;
+      await callback(target);
       if (!mounted) return;
       await _loadSessionData();
     } on Object {
@@ -361,7 +368,7 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
   }
 
   Future<void> _confirmPurgeDraftPhotos() async {
-    if (_busyAction) return;
+    if (_busyAction || _verifyingNisn != null) return;
     if (!_hasAnyDraftPhotos) {
       _showSnackBar('Belum ada foto draft yang tersimpan pada sesi ini.');
       return;
@@ -420,7 +427,7 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
   }
 
   Future<void> _handleExportPdf() async {
-    if (_busyAction) return;
+    if (_busyAction || _verifyingNisn != null) return;
     await _drainPendingWrites();
     if (!mounted) return;
 
@@ -468,6 +475,7 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
     }
 
     final isExported = _session.status == 'exported';
+    final isActionLocked = _busyAction || _verifyingNisn != null;
 
     return Scaffold(
       backgroundColor: Sik3Colors.surfaceLight,
@@ -524,7 +532,7 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
                             reviewCount: reviewCount,
                             incompleteCount: incompleteCount,
                             hasPhotos: _hasAnyDraftPhotos,
-                            busy: _busyAction,
+                            busy: isActionLocked,
                             onPurgePhotos: _confirmPurgeDraftPhotos,
                           ),
                         ),
@@ -555,22 +563,30 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
                                 const SizedBox(height: Sik3Spacing.md),
                             itemBuilder: (context, index) {
                               final record = _records[index];
+                              final nisn = record.nisn;
+                              final isThisVerifying = _verifyingNisn == nisn;
+                              final canToggleApd =
+                                  !_busyAction && !isThisVerifying;
                               return _StudentDraftCard(
                                 record: record,
                                 requiredApd: _session.orderedRequiredApd,
                                 requiredApdSet: _session.requiredApd,
-                                isVerifyingAi: _verifyingNisn == record.nisn,
-                                onToggleApd: (item) =>
-                                    _toggleApdChip(record, item),
+                                showVerifyAi: widget.onVerifyWithAi != null,
+                                isVerifyingAi: isThisVerifying,
+                                onToggleApd: canToggleApd
+                                    ? (item) => _toggleApdChip(nisn, item)
+                                    : null,
                                 onViewPhotos:
                                     (record.upperPhotoPath != null ||
                                         record.lowerPhotoPath != null)
                                     ? () => _openEvidencePhotos(record)
                                     : null,
-                                onRescan: _busyAction
+                                onRescan: isActionLocked
                                     ? null
                                     : () => _rescanStudent(record),
-                                onVerifyAi: widget.onVerifyWithAi != null
+                                onVerifyAi:
+                                    (widget.onVerifyWithAi != null &&
+                                        !isActionLocked)
                                     ? () => _verifyStudentWithAi(record)
                                     : null,
                               );
@@ -583,7 +599,7 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
               ),
       ),
       bottomNavigationBar: _BottomDraftActionBar(
-        busy: _busyAction,
+        busy: isActionLocked,
         onExportPdf: _handleExportPdf,
         onScanStudent: _scanNewStudent,
       ),
@@ -868,6 +884,7 @@ class _StudentDraftCard extends StatelessWidget {
     required this.record,
     required this.requiredApd,
     required this.requiredApdSet,
+    required this.showVerifyAi,
     required this.isVerifyingAi,
     required this.onToggleApd,
     required this.onViewPhotos,
@@ -878,8 +895,9 @@ class _StudentDraftCard extends StatelessWidget {
   final ScanRecord record;
   final List<ApdItem> requiredApd;
   final Set<ApdItem> requiredApdSet;
+  final bool showVerifyAi;
   final bool isVerifyingAi;
-  final ValueChanged<ApdItem> onToggleApd;
+  final ValueChanged<ApdItem>? onToggleApd;
   final VoidCallback? onViewPhotos;
   final VoidCallback? onRescan;
   final VoidCallback? onVerifyAi;
@@ -986,7 +1004,7 @@ class _StudentDraftCard extends StatelessWidget {
                   result:
                       record.apdResults[item] ??
                       ApdCheckResult(item: item, status: ApdStatus.needsReview),
-                  onTap: () => onToggleApd(item),
+                  onTap: onToggleApd == null ? null : () => onToggleApd!(item),
                 ),
             ],
           ),
@@ -1010,10 +1028,10 @@ class _StudentDraftCard extends StatelessWidget {
                 icon: const Icon(Icons.camera_alt_outlined, size: 18),
                 label: const Text('Scan Ulang'),
               ),
-              if (onVerifyAi != null)
+              if (showVerifyAi)
                 TextButton.icon(
                   key: ValueKey<String>('verify_ai_${record.nisn}'),
-                  onPressed: isVerifyingAi ? null : onVerifyAi,
+                  onPressed: onVerifyAi,
                   icon: isVerifyingAi
                       ? const SizedBox(
                           width: 16,
@@ -1134,11 +1152,12 @@ class _ApdStatusChip extends StatelessWidget {
 
   final ApdItem item;
   final ApdCheckResult result;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final duration = Sik3Motion.resolve(context, Sik3Motion.fast);
+    final enabled = onTap != null;
 
     final Color accent;
     final IconData statusIcon;
@@ -1162,61 +1181,67 @@ class _ApdStatusChip extends StatelessWidget {
 
     return Semantics(
       button: true,
+      enabled: enabled,
       label: '${item.labelId}, $subLabel, ketuk untuk ubah',
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(Sik3Radius.chip),
-          child: AnimatedContainer(
-            duration: duration,
-            curve: Sik3Motion.curve,
-            constraints: const BoxConstraints(
-              minHeight: Sik3Spacing.minTouchTarget,
-            ),
-            padding: const EdgeInsets.symmetric(
-              horizontal: Sik3Spacing.md,
-              vertical: Sik3Spacing.xs + 2,
-            ),
-            decoration: BoxDecoration(
-              color: accent.withValues(alpha: 0.10),
-              borderRadius: BorderRadius.circular(Sik3Radius.chip),
-              border: Border.all(color: accent, width: 1.5),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                ApdSvgIcon(item: item, size: 20, color: accent),
-                const SizedBox(width: Sik3Spacing.sm),
-                Flexible(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Text(
-                        item.labelId,
-                        style: const TextStyle(
-                          color: Sik3Colors.textPrimary,
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      Text(
-                        subLabel,
-                        style: Sik3Typography.tabular(
-                          TextStyle(
-                            color: accent,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
+      child: AnimatedOpacity(
+        duration: duration,
+        curve: Sik3Motion.curve,
+        opacity: enabled ? 1.0 : 0.6,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(Sik3Radius.chip),
+            child: AnimatedContainer(
+              duration: duration,
+              curve: Sik3Motion.curve,
+              constraints: const BoxConstraints(
+                minHeight: Sik3Spacing.minTouchTarget,
+              ),
+              padding: const EdgeInsets.symmetric(
+                horizontal: Sik3Spacing.md,
+                vertical: Sik3Spacing.xs + 2,
+              ),
+              decoration: BoxDecoration(
+                color: accent.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(Sik3Radius.chip),
+                border: Border.all(color: accent, width: 1.5),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  ApdSvgIcon(item: item, size: 20, color: accent),
+                  const SizedBox(width: Sik3Spacing.sm),
+                  Flexible(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          item.labelId,
+                          style: const TextStyle(
+                            color: Sik3Colors.textPrimary,
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
-                      ),
-                    ],
+                        Text(
+                          subLabel,
+                          style: Sik3Typography.tabular(
+                            TextStyle(
+                              color: accent,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                const SizedBox(width: Sik3Spacing.sm),
-                Icon(statusIcon, size: 17, color: accent),
-              ],
+                  const SizedBox(width: Sik3Spacing.sm),
+                  Icon(statusIcon, size: 17, color: accent),
+                ],
+              ),
             ),
           ),
         ),
@@ -1399,7 +1424,7 @@ class _EvidencePhotoViewerSheet extends StatelessWidget {
   }
 }
 
-class _ZonePhotoPreviewCard extends StatelessWidget {
+class _ZonePhotoPreviewCard extends StatefulWidget {
   const _ZonePhotoPreviewCard({
     required this.title,
     required this.filePath,
@@ -1409,17 +1434,61 @@ class _ZonePhotoPreviewCard extends StatelessWidget {
   final String filePath;
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    Uint8List? imageBytes;
+  State<_ZonePhotoPreviewCard> createState() => _ZonePhotoPreviewCardState();
+}
+
+class _ZonePhotoPreviewCardState extends State<_ZonePhotoPreviewCard> {
+  Uint8List? _bytes;
+  bool _loading = true;
+  int _loadSeq = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadPhotoBytes(fromInitState: true));
+  }
+
+  @override
+  void didUpdateWidget(covariant _ZonePhotoPreviewCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.filePath != widget.filePath) {
+      unawaited(_loadPhotoBytes(fromInitState: false));
+    }
+  }
+
+  Future<void> _loadPhotoBytes({required bool fromInitState}) async {
+    final seq = ++_loadSeq;
+    if (!fromInitState && mounted) {
+      setState(() {
+        _loading = true;
+        _bytes = null;
+      });
+    }
+
+    Uint8List? loadedBytes;
     try {
-      final file = File(filePath);
-      if (file.existsSync()) {
-        imageBytes = file.readAsBytesSync();
+      final file = File(widget.filePath);
+      if (await file.exists()) {
+        final raw = await file.readAsBytes();
+        if (raw.isNotEmpty) {
+          loadedBytes = raw;
+        }
       }
     } on Object {
-      imageBytes = null;
+      loadedBytes = null;
     }
+
+    if (!mounted || seq != _loadSeq) return;
+    setState(() {
+      _bytes = loadedBytes;
+      _loading = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final bytes = _bytes;
 
     return Container(
       decoration: BoxDecoration(
@@ -1437,19 +1506,25 @@ class _ZonePhotoPreviewCard extends StatelessWidget {
               vertical: Sik3Spacing.sm,
             ),
             child: Text(
-              title,
+              widget.title,
               style: theme.textTheme.labelLarge?.copyWith(
                 color: Sik3Colors.navy,
                 fontWeight: FontWeight.w700,
               ),
             ),
           ),
-          if (imageBytes != null && imageBytes.isNotEmpty)
+          if (_loading)
+            const SizedBox(
+              height: 140,
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (bytes != null)
             ConstrainedBox(
               constraints: const BoxConstraints(maxHeight: 280),
               child: Image.memory(
-                imageBytes,
+                bytes,
                 fit: BoxFit.contain,
+                gaplessPlayback: true,
                 errorBuilder: (_, _, _) => const _MissingPhotoPlaceholder(),
               ),
             )

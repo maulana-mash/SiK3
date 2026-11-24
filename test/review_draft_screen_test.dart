@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -497,10 +498,14 @@ void main() {
         await tester.ensureVisible(viewPhotoBtn);
         await tester.pumpAndSettle();
         await tester.tap(viewPhotoBtn);
-        await tester.pumpAndSettle();
+        await _pumpWithRealIo(
+          tester,
+          until: () => find.byType(Image).evaluate().length == 2,
+        );
         expect(find.text('Foto Bukti — Eka Ramadhan'), findsOneWidget);
         expect(find.text('Zona Atas (Badan, Kepala & Tangan)'), findsOneWidget);
         expect(find.text('Zona Bawah (Kaki & Sepatu Bengkel)'), findsOneWidget);
+        expect(find.byType(Image), findsNWidgets(2));
         await tester.tap(find.byTooltip('Tutup'));
         await tester.pumpAndSettle();
 
@@ -716,7 +721,13 @@ void main() {
         await tester.ensureVisible(viewPhoto);
         await tester.pumpAndSettle();
         await tester.tap(viewPhoto);
-        await tester.pumpAndSettle();
+        await _pumpWithRealIo(
+          tester,
+          until: () => find
+              .text('Berkas foto tidak ditemukan atau sudah dibersihkan.')
+              .evaluate()
+              .isNotEmpty,
+        );
         expect(
           find.text('Berkas foto tidak ditemukan atau sudah dibersihkan.'),
           findsOneWidget,
@@ -757,6 +768,208 @@ void main() {
         await tester.pumpAndSettle();
         expect(exportCalls, 1);
         expect(find.text('Diekspor'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'locks APD chip toggles and other AI verify buttons while AI verify or busy action is in flight',
+      (tester) async {
+        final db = await openMemoryDb();
+        addTearDown(db.close);
+        final seeded = await seedClassAndSession(
+          db,
+          requiredApd: const <ApdItem>{ApdItem.helm},
+        );
+        final sessionId = seeded.session.id!;
+
+        await db.upsertScanRecord(
+          ScanRecord(
+            sessionId: sessionId,
+            nisn: '0081000001',
+            attendanceNo: '01',
+            studentName: 'Hadi Kusuma',
+            apdResults: const <ApdItem, ApdCheckResult>{
+              ApdItem.helm: ApdCheckResult(
+                item: ApdItem.helm,
+                status: ApdStatus.needsReview,
+              ),
+            },
+            scannedAt: DateTime(2026, 11, 24, 9, 0),
+          ),
+        );
+        await db.upsertScanRecord(
+          ScanRecord(
+            sessionId: sessionId,
+            nisn: '0081000002',
+            attendanceNo: '02',
+            studentName: 'Indra Wijaya',
+            apdResults: const <ApdItem, ApdCheckResult>{
+              ApdItem.helm: ApdCheckResult(
+                item: ApdItem.helm,
+                status: ApdStatus.needsReview,
+              ),
+            },
+            scannedAt: DateTime(2026, 11, 24, 9, 1),
+          ),
+        );
+
+        final aiCompleter = Completer<void>();
+        final exportCompleter = Completer<void>();
+        var aiCalls = 0;
+
+        tester.view.physicalSize = const Size(420, 1100);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSik3Theme(),
+            home: ReviewDraftScreen(
+              schoolClass: seeded.schoolClass,
+              session: seeded.session,
+              database: db,
+              onVerifyWithAi: (record) async {
+                aiCalls += 1;
+                await aiCompleter.future;
+                await db.upsertScanRecord(record.copyWith(isAiVerified: true));
+              },
+              onExportPdf: (_, _, _, _) => exportCompleter.future,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // 1. Start AI verify for student 1 (remains in flight).
+        await tester.tap(
+          find.byKey(const ValueKey<String>('verify_ai_0081000001')),
+        );
+        await tester.pump();
+
+        expect(aiCalls, 1);
+
+        // Student 1's APD chip tap is ignored while AI verify is in flight.
+        await tester.tap(
+          find.byKey(const ValueKey<String>('apd_chip_0081000001_helm')),
+        );
+        await tester.pump();
+        var s1 = (await db.getSessionRecords(sessionId)).first;
+        expect(s1.apdResults[ApdItem.helm]?.status, ApdStatus.needsReview);
+        expect(s1.isManualOverride, isFalse);
+
+        // Student 2's AI button is disabled while student 1 is verifying.
+        final aiBtn2 = tester.widget<TextButton>(
+          find.byKey(const ValueKey<String>('verify_ai_0081000002')),
+        );
+        expect(aiBtn2.onPressed, isNull);
+        await tester.tap(
+          find.byKey(const ValueKey<String>('verify_ai_0081000002')),
+        );
+        await tester.pump();
+        expect(aiCalls, 1);
+
+        // Complete AI verify -> student 1 verified and buttons re-enabled.
+        aiCompleter.complete();
+        await tester.pumpAndSettle();
+        expect(find.text('Terverifikasi AI'), findsOneWidget);
+
+        // 2. Start busy action (Export PDF) -> APD chip & AI buttons locked while busy.
+        await tester.tap(
+          find.byKey(const ValueKey<String>('export_pdf_button')),
+        );
+        await tester.pump();
+
+        await tester.tap(
+          find.byKey(const ValueKey<String>('apd_chip_0081000002_helm')),
+        );
+        await tester.pump();
+        final s2WhileBusy = (await db.getSessionRecords(sessionId))[1];
+        expect(
+          s2WhileBusy.apdResults[ApdItem.helm]?.status,
+          ApdStatus.needsReview,
+        );
+        expect(
+          tester
+              .widget<TextButton>(
+                find.byKey(const ValueKey<String>('verify_ai_0081000002')),
+              )
+              .onPressed,
+          isNull,
+        );
+
+        exportCompleter.complete();
+        await tester.pumpAndSettle();
+      },
+    );
+
+    testWidgets(
+      'ZonePhotoPreviewCard loads existing photo asynchronously from cached bytes and handles missing photo safely',
+      (tester) async {
+        final db = await openMemoryDb();
+        addTearDown(db.close);
+        final seeded = await seedClassAndSession(db);
+        final tempDir = Directory.systemTemp.createTempSync('sik3_preview_');
+        addTearDown(() {
+          if (tempDir.existsSync()) {
+            tempDir.deleteSync(recursive: true);
+          }
+        });
+        final existingUpper = File(p.join(tempDir.path, 'existing_upper.jpg'))
+          ..writeAsBytesSync(_createSampleJpgBytes(width: 240, height: 180));
+        final missingLowerPath = p.join(tempDir.path, 'deleted_lower.jpg');
+
+        await db.upsertScanRecord(
+          ScanRecord(
+            sessionId: seeded.session.id!,
+            nisn: '0082000099',
+            attendanceNo: '03',
+            studentName: 'Joko Susilo',
+            apdResults: const <ApdItem, ApdCheckResult>{
+              ApdItem.bajuPraktik: ApdCheckResult(
+                item: ApdItem.bajuPraktik,
+                status: ApdStatus.detected,
+              ),
+            },
+            upperPhotoPath: existingUpper.path,
+            lowerPhotoPath: missingLowerPath,
+            scannedAt: DateTime(2026, 11, 24, 9, 5),
+          ),
+        );
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSik3Theme(),
+            home: ReviewDraftScreen(
+              schoolClass: seeded.schoolClass,
+              session: seeded.session,
+              database: db,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        final viewPhotoBtn = find.byKey(
+          const ValueKey<String>('view_photo_0082000099'),
+        );
+        await tester.ensureVisible(viewPhotoBtn);
+        await tester.pumpAndSettle();
+        await tester.tap(viewPhotoBtn);
+        await _pumpWithRealIo(
+          tester,
+          until: () =>
+              find.byType(Image).evaluate().length == 1 &&
+              find
+                  .text('Berkas foto tidak ditemukan atau sudah dibersihkan.')
+                  .evaluate()
+                  .isNotEmpty,
+        );
+
+        expect(tester.takeException(), isNull);
+        expect(find.byType(Image), findsOneWidget);
+        expect(
+          find.text('Berkas foto tidak ditemukan atau sudah dibersihkan.'),
+          findsOneWidget,
+        );
       },
     );
   });
@@ -1173,6 +1386,161 @@ void main() {
         expect(await db.getSessionRecords(seeded.session.id!), hasLength(1));
       },
     );
+
+    testWidgets(
+      'capture failure surfaces reachable Manual SnackBar action that completes manual assessment without photo',
+      (tester) async {
+        final db = await openMemoryDb();
+        addTearDown(db.close);
+        final seeded = await seedClassAndSession(db);
+        final detector = _FakePpeDetector(isModelLoaded: true);
+        ScanRecord? savedResult;
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSik3Theme(),
+            home: Builder(
+              builder: (context) => Scaffold(
+                body: Center(
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      savedResult = await Navigator.of(context)
+                          .push<ScanRecord>(
+                            MaterialPageRoute<ScanRecord>(
+                              builder: (_) => ApdZoneScanScreen(
+                                session: seeded.session,
+                                student: sampleStudent,
+                                database: db,
+                                detector: detector,
+                                labelConfig: testLabelConfig,
+                                cameraPreviewBuilder: (_, zone) =>
+                                    const ColoredBox(
+                                      color: Sik3Colors.scannerDark,
+                                    ),
+                                capturePhotoBytes: (_) async {
+                                  throw Exception('Hardware shutter failure');
+                                },
+                              ),
+                            ),
+                          );
+                    },
+                    child: const Text('Buka Kamera Gagal'),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+
+        await tester.tap(find.text('Buka Kamera Gagal'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(
+          find.byKey(const ValueKey<String>('zone_capture_button')),
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text(
+            'Gagal mengambil foto. Coba lagi atau gunakan penilaian manual tanpa foto.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('Manual'), findsOneWidget);
+
+        await tester.tap(find.text('Manual'));
+        await tester.pumpAndSettle();
+
+        expect(savedResult, isNotNull);
+        expect(savedResult!.upperPhotoPath, isNull);
+        expect(savedResult!.lowerPhotoPath, isNull);
+        for (final item in seeded.session.requiredApd) {
+          expect(savedResult!.apdResults[item]?.status, ApdStatus.needsReview);
+        }
+        expect(await db.getSessionRecords(seeded.session.id!), hasLength(1));
+      },
+    );
+
+    testWidgets(
+      'PopScope blocks Back navigation while capture/save processing is active',
+      (tester) async {
+        final db = await openMemoryDb();
+        addTearDown(db.close);
+        final seeded = await seedClassAndSession(
+          db,
+          requiredApd: const <ApdItem>{ApdItem.helm},
+        );
+        final tempDir = Directory.systemTemp.createTempSync('sik3_popscope_');
+        addTearDown(() {
+          if (tempDir.existsSync()) {
+            tempDir.deleteSync(recursive: true);
+          }
+        });
+        final captureCompleter = Completer<Uint8List>();
+        final detector = _FakePpeDetector(isModelLoaded: false);
+        ScanRecord? savedResult;
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSik3Theme(),
+            home: Builder(
+              builder: (context) => Scaffold(
+                body: Center(
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      savedResult = await Navigator.of(context)
+                          .push<ScanRecord>(
+                            MaterialPageRoute<ScanRecord>(
+                              builder: (_) => ApdZoneScanScreen(
+                                session: seeded.session,
+                                student: sampleStudent,
+                                database: db,
+                                detector: detector,
+                                labelConfig: testLabelConfig,
+                                evidenceDirectoryResolver: () async => tempDir,
+                                cameraPreviewBuilder: (_, zone) =>
+                                    const ColoredBox(
+                                      color: Sik3Colors.scannerDark,
+                                    ),
+                                capturePhotoBytes: (_) =>
+                                    captureCompleter.future,
+                              ),
+                            ),
+                          );
+                    },
+                    child: const Text('Buka PopScope Test'),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+
+        await tester.tap(find.text('Buka PopScope Test'));
+        await tester.pumpAndSettle();
+
+        // Trigger capture -> enters _isProcessing = true.
+        await tester.tap(
+          find.byKey(const ValueKey<String>('zone_capture_button')),
+        );
+        await tester.pump();
+
+        // Attempt Back navigation while processing -> blocked by PopScope.
+        await tester.pageBack();
+        await tester.pump();
+        expect(find.byType(ApdZoneScanScreen), findsOneWidget);
+
+        // Complete capture -> finishes save and pops cleanly with ScanRecord.
+        captureCompleter.complete(
+          _createSampleJpgBytes(width: 400, height: 300),
+        );
+        await _pumpWithRealIo(tester, until: () => savedResult != null);
+
+        expect(find.byType(ApdZoneScanScreen), findsNothing);
+        expect(savedResult, isNotNull);
+        expect(File(savedResult!.upperPhotoPath!).existsSync(), isTrue);
+      },
+    );
   });
 
   group('ClassSetupScreen wiring into ReviewDraftScreen', () {
@@ -1269,6 +1637,77 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(await db.getSessionsForClass(1), isEmpty);
+      },
+    );
+
+    testWidgets(
+      'inline Mata Praktik starts ReviewDraftScreen directly without popping redundant subject sheet',
+      (tester) async {
+        final prefs = await LocalPrefs.open();
+        final db = await openMemoryDb();
+        addTearDown(db.close);
+
+        await db.upsertClass(
+          const SchoolClass(
+            name: 'XI TP 2',
+            homeroomTeacher: 'Pak Wawan',
+            requiredApd: <ApdItem>{
+              ApdItem.bajuPraktik,
+              ApdItem.helm,
+            },
+          ),
+        );
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSik3Theme(),
+            home: ClassSetupScreen(
+              prefs: prefs,
+              database: db,
+              onSwitchRole: () {},
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // Enter Mata Praktik inline -> should jump straight to ReviewDraftScreen.
+        final subjectField = find.byKey(
+          const ValueKey<String>('session_subject_field'),
+        );
+        await tester.ensureVisible(subjectField);
+        await tester.pumpAndSettle();
+        await tester.enterText(subjectField, 'Pengelasan SMAW');
+
+        final startButton = find.byKey(
+          const ValueKey<String>('start_session_button'),
+        );
+        await tester.ensureVisible(startButton);
+        await tester.pumpAndSettle();
+        await tester.tap(startButton);
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byKey(const ValueKey<String>('start_session_subject_sheet_field')),
+          findsNothing,
+        );
+        expect(find.byType(ReviewDraftScreen), findsOneWidget);
+        expect(find.text('Pengelasan SMAW'), findsWidgets);
+
+        // Returning and clearing inline field prompts the subject sheet again.
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(subjectField);
+        await tester.pumpAndSettle();
+        await tester.enterText(subjectField, '');
+        await tester.ensureVisible(startButton);
+        await tester.pumpAndSettle();
+        await tester.tap(startButton);
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byKey(const ValueKey<String>('start_session_subject_sheet_field')),
+          findsOneWidget,
+        );
       },
     );
   });

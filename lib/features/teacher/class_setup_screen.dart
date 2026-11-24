@@ -544,19 +544,19 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
     final db = widget.database;
     var subjectText = _subjectController.text.trim();
 
-    if (db != null && widget.onStartSession == null) {
-      final pickedSubject = await _promptSessionSubjectSheet(selectedClass);
-      if (pickedSubject == null || !mounted) return;
-      subjectText = pickedSubject.trim();
-      _subjectController.text = subjectText;
-    }
-
     setState(() {
       _startingSession = true;
       _sessionError = null;
     });
 
     try {
+      if (db != null && widget.onStartSession == null && subjectText.isEmpty) {
+        final pickedSubject = await _promptSessionSubjectSheet(selectedClass);
+        if (pickedSubject == null || !mounted) return;
+        subjectText = pickedSubject.trim();
+        _subjectController.text = subjectText;
+      }
+
       final profile = widget.prefs.getTeacherProfile();
       var sessionDraft = InspectionSession(
         classId: selectedClass.id ?? 0,
