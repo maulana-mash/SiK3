@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:sik3/core/theme/sik3_theme.dart';
+import 'package:sik3/data/app_database.dart';
 import 'package:sik3/data/local_prefs.dart';
 import 'package:sik3/features/onboarding/role_gate_screen.dart';
 import 'package:sik3/features/student/student_qr_screen.dart';
@@ -14,7 +15,8 @@ typedef TeacherHomeBuilder = Widget Function(
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final prefs = await LocalPrefs.open();
-  runApp(Sik3App(prefs: prefs));
+  final database = await AppDatabase.open();
+  runApp(Sik3App(prefs: prefs, database: database));
 }
 
 /// Root SiK3 application routing offline between Role Gate, Student QR, & Teacher Home.
@@ -22,10 +24,12 @@ class Sik3App extends StatefulWidget {
   const Sik3App({
     super.key,
     required this.prefs,
+    this.database,
     this.teacherHomeBuilder,
   });
 
   final LocalPrefs prefs;
+  final AppDatabase? database;
   final TeacherHomeBuilder? teacherHomeBuilder;
 
   @override
@@ -93,6 +97,7 @@ class _Sik3AppState extends State<Sik3App> {
             ClassSetupScreen(
               key: const ValueKey<String>('screen_class_setup'),
               prefs: widget.prefs,
+              database: widget.database,
               onSwitchRole: _handleSwitchRole,
             );
       case null:

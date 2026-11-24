@@ -3,6 +3,7 @@ import 'package:sik3/core/models/apd_item.dart';
 import 'package:sik3/core/models/inspection_models.dart';
 import 'package:sik3/core/theme/sik3_theme.dart';
 import 'package:sik3/core/widgets/apd_svg_icon.dart';
+import 'package:sik3/data/app_database.dart';
 import 'package:sik3/data/local_prefs.dart';
 import 'package:sik3/features/teacher/qr_scan_screen.dart';
 
@@ -21,6 +22,7 @@ class ClassSetupScreen extends StatefulWidget {
     super.key,
     required this.prefs,
     required this.onSwitchRole,
+    this.database,
     this.loadClasses,
     this.saveClass,
     this.deleteClass,
@@ -29,6 +31,7 @@ class ClassSetupScreen extends StatefulWidget {
 
   final LocalPrefs prefs;
   final VoidCallback onSwitchRole;
+  final AppDatabase? database;
   final ClassLoader? loadClasses;
   final ClassSaver? saveClass;
   final ClassDeleter? deleteClass;
@@ -56,11 +59,14 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
   final Map<int, int> _lastPersistedSeqByClass = <int, int>{};
   final Map<int, SchoolClass> _lastPersistedByClass = <int, SchoolClass>{};
 
+  ClassLoader? get _effectiveLoadClasses =>
+      widget.loadClasses ?? widget.database?.getClasses;
+
   @override
   void initState() {
     super.initState();
     _teacherProfile = widget.prefs.getTeacherProfile();
-    if (widget.loadClasses != null) {
+    if (_effectiveLoadClasses != null) {
       _loading = true;
       _refreshClasses();
     }
@@ -85,7 +91,7 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
       _selectedClass?.requiredApd ?? _draftRequiredApd;
 
   Future<void> _refreshClasses() async {
-    final loader = widget.loadClasses;
+    final loader = _effectiveLoadClasses;
     if (loader == null) return;
     setState(() => _loading = true);
     try {
@@ -132,6 +138,11 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
     final saver = widget.saveClass;
     if (saver != null) {
       return saver(schoolClass);
+    }
+    final db = widget.database;
+    if (db != null) {
+      final assignedId = await db.upsertClass(schoolClass);
+      return schoolClass.copyWith(id: assignedId);
     }
     if (schoolClass.id != null) {
       return schoolClass;
@@ -341,9 +352,10 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
     if (confirmed != true || !mounted) return;
 
     final classId = schoolClass.id;
+    final deleter = widget.deleteClass ?? widget.database?.deleteClass;
     try {
-      if (classId != null && widget.deleteClass != null) {
-        await widget.deleteClass!(classId);
+      if (classId != null && deleter != null) {
+        await deleter(classId);
       }
     } catch (_) {
       _showErrorSnackBar('Gagal menghapus kelas. Silakan coba lagi.');
@@ -395,7 +407,7 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
     try {
       final profile = widget.prefs.getTeacherProfile();
       final subjectText = _subjectController.text.trim();
-      final sessionDraft = InspectionSession(
+      var sessionDraft = InspectionSession(
         classId: selectedClass.id ?? 0,
         subjectName: subjectText.isEmpty ? 'Praktik Bengkel' : subjectText,
         teacherName: profile.name.isEmpty ? 'Guru Bengkel' : profile.name,
@@ -407,6 +419,19 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
         requiredApd: Set<ApdItem>.unmodifiable(requiredApd),
         status: 'draft',
       );
+
+      final db = widget.database;
+      if (db != null && selectedClass.id != null) {
+        try {
+          final sessionId = await db.createSession(sessionDraft);
+          sessionDraft = sessionDraft.copyWith(id: sessionId);
+        } catch (_) {
+          _showErrorSnackBar('Gagal membuat sesi inspeksi. Silakan coba lagi.');
+          return;
+        }
+      }
+
+      if (!mounted) return;
 
       if (widget.onStartSession != null) {
         await widget.onStartSession!(context, selectedClass, sessionDraft);
