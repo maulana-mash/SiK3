@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:sik3/core/models/apd_item.dart';
 import 'package:sik3/core/models/inspection_models.dart';
 import 'package:sik3/core/theme/sik3_theme.dart';
@@ -11,6 +11,7 @@ import 'package:sik3/data/app_database.dart';
 import 'package:sik3/data/local_prefs.dart';
 import 'package:sik3/data/qr_identity_codec.dart';
 import 'package:sik3/features/teacher/apd_zone_scan_screen.dart';
+import 'package:sik3/features/teacher/pdf_preview_screen.dart';
 import 'package:sik3/features/teacher/qr_scan_screen.dart';
 
 typedef StudentQrScannerOpener = Future<StudentIdentity?> Function(
@@ -428,12 +429,12 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
 
   Future<void> _handleExportPdf() async {
     if (_busyAction || _verifyingNisn != null) return;
-    await _drainPendingWrites();
-    if (!mounted) return;
+    setState(() => _busyAction = true);
+    try {
+      await _drainPendingWrites();
+      if (!mounted) return;
 
-    if (widget.onExportPdf != null) {
-      setState(() => _busyAction = true);
-      try {
+      if (widget.onExportPdf != null) {
         await widget.onExportPdf!(
           context,
           widget.schoolClass,
@@ -443,17 +444,47 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
         if (mounted) {
           await _loadSessionData();
         }
-      } finally {
-        if (mounted) {
-          setState(() => _busyAction = false);
-        }
+        return;
       }
-      return;
-    }
 
-    _showSnackBar(
-      'Pratinjau & ekspor PDF A4 akan aktif setelah modul laporan terhubung.',
-    );
+      final logoData = await rootBundle.load(
+        'assets/icons/logo_sik3_transparent.png',
+      );
+      final logoBytes = logoData.buffer.asUint8List(
+        logoData.offsetInBytes,
+        logoData.lengthInBytes,
+      );
+      final sessionId = _session.id;
+      if (sessionId != null) {
+        await widget.database.updateSessionStatus(sessionId, 'exported');
+      }
+      final exportedSession = _session.copyWith(status: 'exported');
+      if (!mounted) return;
+      setState(() => _session = exportedSession);
+
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => PdfPreviewScreen(
+            schoolClass: widget.schoolClass,
+            session: exportedSession,
+            records: List<ScanRecord>.unmodifiable(_records),
+            logoBytes: logoBytes,
+          ),
+        ),
+      );
+      if (mounted) {
+        await _loadSessionData();
+      }
+    } on Object {
+      _showSnackBar(
+        'Gagal menyiapkan laporan PDF A4. Silakan coba lagi.',
+        backgroundColor: Sik3Colors.statusMissing,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _busyAction = false);
+      }
+    }
   }
 
   @override
