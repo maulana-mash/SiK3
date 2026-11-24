@@ -58,93 +58,95 @@ class PdfPreviewScreen extends StatelessWidget {
       ),
       body: SafeArea(
         top: false,
+        bottom: false,
         child: PdfPreview(
-        initialPageFormat: PdfPageFormat.a4,
-        pdfFileName: fileName,
-        allowPrinting: true,
-        allowSharing: true,
-        canChangePageFormat: false,
-        canChangeOrientation: false,
-        canDebug: false,
-        dynamicLayout: false,
-        maxPageWidth: 700,
-        shareActionExtraSubject: 'Laporan Inspeksi K3 - ${schoolClass.name}',
-        scrollViewDecoration: const BoxDecoration(
-          color: Sik3Colors.surfaceLight,
-        ),
-        actionBarTheme: const PdfActionBarTheme(
-          backgroundColor: Sik3Colors.navy,
-          iconColor: Colors.white,
-          elevation: 0,
-        ),
-        build: (_) => PdfReportBuilder.build(
-          session: session,
-          schoolClass: schoolClass,
-          records: records,
-          logoBytes: logoBytes,
-        ),
-        loadingWidget: const Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              CircularProgressIndicator(color: Sik3Colors.navy),
-              SizedBox(height: Sik3Spacing.md),
-              Text(
-                'Menyusun dokumen PDF A4...',
-                style: TextStyle(
-                  color: Sik3Colors.textSecondary,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
+          initialPageFormat: PdfPageFormat.a4,
+          pdfFileName: fileName,
+          allowPrinting: true,
+          allowSharing: true,
+          canChangePageFormat: false,
+          canChangeOrientation: false,
+          canDebug: false,
+          dynamicLayout: false,
+          maxPageWidth: 700,
+          shareActionExtraSubject: 'Laporan Inspeksi K3 - ${schoolClass.name}',
+          scrollViewDecoration: const BoxDecoration(
+            color: Sik3Colors.surfaceLight,
           ),
-        ),
-        onPrintError: (context, _) {
-          ScaffoldMessenger.of(context)
-            ..hideCurrentSnackBar()
-            ..showSnackBar(
-              const SnackBar(
-                content: Text(
-                  'Gagal membuka layanan cetak perangkat. Coba bagikan berkas PDF.',
-                ),
-                backgroundColor: Sik3Colors.statusMissing,
-              ),
-            );
-        },
-        onError: (context, _) => Center(
-          child: Padding(
-            padding: const EdgeInsets.all(Sik3Spacing.xl),
+          actionBarTheme: const PdfActionBarTheme(
+            backgroundColor: Sik3Colors.navy,
+            iconColor: Colors.white,
+            elevation: 0,
+          ),
+          build: (_) => PdfReportBuilder.build(
+            session: session,
+            schoolClass: schoolClass,
+            records: records,
+            logoBytes: logoBytes,
+          ),
+          loadingWidget: const Center(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
-                const Icon(
-                  Icons.picture_as_pdf_outlined,
-                  size: 40,
-                  color: Sik3Colors.statusMissing,
-                ),
-                const SizedBox(height: Sik3Spacing.md),
+                CircularProgressIndicator(color: Sik3Colors.navy),
+                SizedBox(height: Sik3Spacing.md),
                 Text(
-                  'Pratinjau PDF tidak dapat ditampilkan',
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: Sik3Colors.textPrimary,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: Sik3Spacing.xs),
-                const Text(
-                  'Anda tetap dapat mencetak atau membagikan berkas PDF dari tombol aksi di bawah.',
-                  textAlign: TextAlign.center,
+                  'Menyusun dokumen PDF A4...',
                   style: TextStyle(
                     color: Sik3Colors.textSecondary,
-                    fontSize: 13,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ],
             ),
           ),
-        ),
+          onPrintError: (context, _) {
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context)
+              ..hideCurrentSnackBar()
+              ..showSnackBar(
+                const SnackBar(
+                  content: Text(
+                    'Gagal membuka layanan cetak perangkat. Coba bagikan berkas PDF.',
+                  ),
+                  backgroundColor: Sik3Colors.statusMissing,
+                ),
+              );
+          },
+          onError: (context, _) => Center(
+            child: Padding(
+              padding: const EdgeInsets.all(Sik3Spacing.xl),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  const Icon(
+                    Icons.picture_as_pdf_outlined,
+                    size: 40,
+                    color: Sik3Colors.statusMissing,
+                  ),
+                  const SizedBox(height: Sik3Spacing.md),
+                  Text(
+                    'Pratinjau PDF tidak dapat ditampilkan',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: Sik3Colors.textPrimary,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: Sik3Spacing.xs),
+                  const Text(
+                    'Anda tetap dapat mencetak atau membagikan berkas PDF dari tombol aksi di bawah.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Sik3Colors.textSecondary,
+                      fontSize: 13,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );

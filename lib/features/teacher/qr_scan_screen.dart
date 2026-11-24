@@ -131,14 +131,28 @@ class _QrScanScreenState extends State<QrScanScreen>
     }
   }
 
+  Future<void> _popWithIdentity(StudentIdentity identity) async {
+    _completed = true;
+    final controller = _controller;
+    if (controller == null) {
+      if (mounted) {
+        Navigator.of(context).pop(identity);
+      }
+      return;
+    }
+    await _safeControllerAction(controller.stop);
+    if (mounted) {
+      Navigator.of(context).pop(identity);
+    }
+  }
+
   void _handleRawPayload(String rawPayload) {
     if (!mounted || _completed || _manualSheetOpen) return;
 
     try {
       final identity = QrIdentityCodec.decode(rawPayload);
-      _completed = true;
       ScaffoldMessenger.of(context).hideCurrentSnackBar();
-      Navigator.of(context).pop(identity);
+      unawaited(_popWithIdentity(identity));
     } on QrFormatException catch (error) {
       final now = _now();
       if (_lastErrorAt != null &&
@@ -180,8 +194,9 @@ class _QrScanScreenState extends State<QrScanScreen>
 
     final controller = _controller;
     if (controller != null && controller.value.isRunning) {
-      unawaited(_safeControllerAction(controller.pause));
+      await _safeControllerAction(controller.stop);
     }
+    if (!mounted) return;
 
     StudentIdentity? manualIdentity;
     try {
@@ -198,13 +213,14 @@ class _QrScanScreenState extends State<QrScanScreen>
     if (!mounted) return;
 
     if (manualIdentity != null) {
-      _completed = true;
-      Navigator.of(context).pop(manualIdentity);
+      await _popWithIdentity(manualIdentity);
       return;
     }
 
-    if (controller != null && controller.value.hasCameraPermission) {
-      unawaited(_safeControllerAction(controller.start));
+    if (controller != null &&
+        controller.value.hasCameraPermission &&
+        !_completed) {
+      await _safeControllerAction(controller.start);
     }
   }
 
@@ -609,171 +625,174 @@ class _ManualStudentInputSheetState extends State<_ManualStudentInputSheet> {
 
     return Padding(
       padding: EdgeInsets.only(bottom: bottomInset),
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(
-          Sik3Spacing.lg,
-          Sik3Spacing.lg,
-          Sik3Spacing.lg,
-          Sik3Spacing.xl,
-        ),
-        child: Form(
-          key: _formKey,
-          autovalidateMode: _submittedOnce
-              ? AutovalidateMode.onUserInteraction
-              : AutovalidateMode.disabled,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              Row(
-                children: <Widget>[
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: Sik3Colors.navy,
-                      borderRadius: BorderRadius.circular(Sik3Radius.inner),
-                    ),
-                    alignment: Alignment.center,
-                    child: const Icon(
-                      Icons.person_add_alt_1_outlined,
-                      color: Colors.white,
-                      size: 20,
-                    ),
-                  ),
-                  const SizedBox(width: Sik3Spacing.md),
-                  Expanded(
-                    child: Text(
-                      'Input Manual Identitas Siswa',
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        color: Sik3Colors.textPrimary,
-                        fontWeight: FontWeight.w700,
+      child: SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(
+            Sik3Spacing.lg,
+            Sik3Spacing.lg,
+            Sik3Spacing.lg,
+            Sik3Spacing.xl,
+          ),
+          child: Form(
+            key: _formKey,
+            autovalidateMode: _submittedOnce
+                ? AutovalidateMode.onUserInteraction
+                : AutovalidateMode.disabled,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                Row(
+                  children: <Widget>[
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: Sik3Colors.navy,
+                        borderRadius: BorderRadius.circular(Sik3Radius.inner),
+                      ),
+                      alignment: Alignment.center,
+                      child: const Icon(
+                        Icons.person_add_alt_1_outlined,
+                        color: Colors.white,
+                        size: 20,
                       ),
                     ),
+                    const SizedBox(width: Sik3Spacing.md),
+                    Expanded(
+                      child: Text(
+                        'Input Manual Identitas Siswa',
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          color: Sik3Colors.textPrimary,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: Sik3Spacing.xs),
+                Text(
+                  'Gunakan bila siswa lupa membawa HP atau Kartu QR tidak terbaca.',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: Sik3Colors.textSecondary,
                   ),
-                ],
-              ),
-              const SizedBox(height: Sik3Spacing.xs),
-              Text(
-                'Gunakan bila siswa lupa membawa HP atau Kartu QR tidak terbaca.',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: Sik3Colors.textSecondary,
                 ),
-              ),
-              const SizedBox(height: Sik3Spacing.lg),
-              TextFormField(
-                key: const ValueKey<String>('manual_student_name_field'),
-                controller: _nameController,
-                textCapitalization: TextCapitalization.words,
-                textInputAction: TextInputAction.next,
-                decoration: const InputDecoration(
-                  labelText: 'Nama Lengkap',
-                  hintText: 'Contoh: Bagas Pratama',
+                const SizedBox(height: Sik3Spacing.lg),
+                TextFormField(
+                  key: const ValueKey<String>('manual_student_name_field'),
+                  controller: _nameController,
+                  textCapitalization: TextCapitalization.words,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(
+                    labelText: 'Nama Lengkap',
+                    hintText: 'Contoh: Bagas Pratama',
+                  ),
+                  validator: (value) {
+                    if (value == null || value.trim().isEmpty) {
+                      return 'Nama lengkap wajib diisi.';
+                    }
+                    return null;
+                  },
                 ),
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'Nama lengkap wajib diisi.';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: Sik3Spacing.md),
-              TextFormField(
-                key: const ValueKey<String>('manual_student_nisn_field'),
-                controller: _nisnController,
-                keyboardType: TextInputType.number,
-                textInputAction: TextInputAction.next,
-                style: Sik3Typography.tabular(const TextStyle(fontSize: 16)),
-                inputFormatters: <TextInputFormatter>[
-                  LengthLimitingTextInputFormatter(20),
-                ],
-                decoration: const InputDecoration(
-                  labelText: 'NISN',
-                  hintText: 'Contoh: 0081234567',
+                const SizedBox(height: Sik3Spacing.md),
+                TextFormField(
+                  key: const ValueKey<String>('manual_student_nisn_field'),
+                  controller: _nisnController,
+                  keyboardType: TextInputType.number,
+                  textInputAction: TextInputAction.next,
+                  style: Sik3Typography.tabular(const TextStyle(fontSize: 16)),
+                  inputFormatters: <TextInputFormatter>[
+                    LengthLimitingTextInputFormatter(20),
+                  ],
+                  decoration: const InputDecoration(
+                    labelText: 'NISN',
+                    hintText: 'Contoh: 0081234567',
+                  ),
+                  validator: (value) {
+                    final trimmed = value?.trim() ?? '';
+                    if (trimmed.isEmpty) {
+                      return 'NISN wajib diisi.';
+                    }
+                    if (!RegExp(r'^\d+$').hasMatch(trimmed)) {
+                      return 'NISN harus berupa angka.';
+                    }
+                    return null;
+                  },
                 ),
-                validator: (value) {
-                  final trimmed = value?.trim() ?? '';
-                  if (trimmed.isEmpty) {
-                    return 'NISN wajib diisi.';
-                  }
-                  if (!RegExp(r'^\d+$').hasMatch(trimmed)) {
-                    return 'NISN harus berupa angka.';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: Sik3Spacing.md),
-              TextFormField(
-                key: const ValueKey<String>('manual_student_absen_field'),
-                controller: _absenController,
-                keyboardType: TextInputType.number,
-                textInputAction: TextInputAction.next,
-                style: Sik3Typography.tabular(const TextStyle(fontSize: 16)),
-                inputFormatters: <TextInputFormatter>[
-                  LengthLimitingTextInputFormatter(10),
-                ],
-                decoration: const InputDecoration(
-                  labelText: 'No. Presensi',
-                  hintText: 'Contoh: 14',
+                const SizedBox(height: Sik3Spacing.md),
+                TextFormField(
+                  key: const ValueKey<String>('manual_student_absen_field'),
+                  controller: _absenController,
+                  keyboardType: TextInputType.number,
+                  textInputAction: TextInputAction.next,
+                  style: Sik3Typography.tabular(const TextStyle(fontSize: 16)),
+                  inputFormatters: <TextInputFormatter>[
+                    LengthLimitingTextInputFormatter(10),
+                  ],
+                  decoration: const InputDecoration(
+                    labelText: 'No. Presensi',
+                    hintText: 'Contoh: 14',
+                  ),
+                  validator: (value) {
+                    if (value == null || value.trim().isEmpty) {
+                      return 'No. Presensi wajib diisi.';
+                    }
+                    return null;
+                  },
                 ),
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'No. Presensi wajib diisi.';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: Sik3Spacing.md),
-              TextFormField(
-                key: const ValueKey<String>('manual_student_class_field'),
-                controller: _classController,
-                textCapitalization: TextCapitalization.characters,
-                textInputAction: TextInputAction.next,
-                decoration: const InputDecoration(
-                  labelText: 'Kelas',
-                  hintText: 'Contoh: XI TKR 1',
+                const SizedBox(height: Sik3Spacing.md),
+                TextFormField(
+                  key: const ValueKey<String>('manual_student_class_field'),
+                  controller: _classController,
+                  textCapitalization: TextCapitalization.characters,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(
+                    labelText: 'Kelas',
+                    hintText: 'Contoh: XI TKR 1',
+                  ),
+                  validator: (value) {
+                    if (value == null || value.trim().isEmpty) {
+                      return 'Kelas wajib diisi.';
+                    }
+                    return null;
+                  },
                 ),
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'Kelas wajib diisi.';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: Sik3Spacing.md),
-              TextFormField(
-                key: const ValueKey<String>('manual_student_major_field'),
-                controller: _majorController,
-                textCapitalization: TextCapitalization.words,
-                textInputAction: TextInputAction.done,
-                onFieldSubmitted: (_) => _submit(),
-                decoration: const InputDecoration(
-                  labelText: 'Jurusan',
-                  hintText: 'Contoh: Teknik Kendaraan Ringan',
+                const SizedBox(height: Sik3Spacing.md),
+                TextFormField(
+                  key: const ValueKey<String>('manual_student_major_field'),
+                  controller: _majorController,
+                  textCapitalization: TextCapitalization.words,
+                  textInputAction: TextInputAction.done,
+                  onFieldSubmitted: (_) => _submit(),
+                  decoration: const InputDecoration(
+                    labelText: 'Jurusan',
+                    hintText: 'Contoh: Teknik Kendaraan Ringan',
+                  ),
+                  validator: (value) {
+                    if (value == null || value.trim().isEmpty) {
+                      return 'Jurusan wajib diisi.';
+                    }
+                    return null;
+                  },
                 ),
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'Jurusan wajib diisi.';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: Sik3Spacing.xl),
-              FilledButton(
-                key: const ValueKey<String>('manual_student_submit_button'),
-                onPressed: _submit,
-                style: FilledButton.styleFrom(
-                  backgroundColor: Sik3Colors.amber,
-                  foregroundColor: Sik3Colors.navy,
+                const SizedBox(height: Sik3Spacing.xl),
+                FilledButton(
+                  key: const ValueKey<String>('manual_student_submit_button'),
+                  onPressed: _submit,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Sik3Colors.amber,
+                    foregroundColor: Sik3Colors.navy,
+                  ),
+                  child: const Text('Gunakan Identitas Siswa'),
                 ),
-                child: const Text('Gunakan Identitas Siswa'),
-              ),
-              const SizedBox(height: Sik3Spacing.sm),
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(null),
-                child: const Text('Batal'),
-              ),
-            ],
+                const SizedBox(height: Sik3Spacing.sm),
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(null),
+                  child: const Text('Batal'),
+                ),
+              ],
+            ),
           ),
         ),
       ),

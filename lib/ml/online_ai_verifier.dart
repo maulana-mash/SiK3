@@ -49,6 +49,12 @@ class OnlineAiVerifier {
     return requested;
   }
 
+  static String _formatTimeoutLabel(Duration duration) {
+    return duration.inSeconds >= 1
+        ? '${duration.inSeconds} detik'
+        : '${duration.inMilliseconds} ms';
+  }
+
   /// Sends available student evidence photos (base64 JPEG) to [endpointUrl]
   /// and maps structured AI results onto [requiredItems]. Never throws.
   Future<OnlineVerifyResult> verify({
@@ -110,6 +116,13 @@ class OnlineAiVerifier {
         }
       }
 
+      if (response.statusCode == 408 || response.statusCode == 504) {
+        return VerifyFailure(
+          'Verifikasi AI melebihi batas waktu (${_formatTimeoutLabel(timeout)}). Draft lokal Anda tetap aman.',
+          isTimeout: true,
+        );
+      }
+
       if (response.statusCode < 200 || response.statusCode >= 300) {
         return VerifyFailure(
           'Server Verifikasi AI mengembalikan galat (HTTP ${response.statusCode}). Draft lokal Anda tetap aman.',
@@ -118,8 +131,8 @@ class OnlineAiVerifier {
 
       return _parseSuccessBody(response.body, requiredItems);
     } on TimeoutException {
-      return const VerifyFailure(
-        'Verifikasi AI melebihi batas waktu (10 detik). Draft lokal Anda tetap aman.',
+      return VerifyFailure(
+        'Verifikasi AI melebihi batas waktu (${_formatTimeoutLabel(timeout)}). Draft lokal Anda tetap aman.',
         isTimeout: true,
       );
     } on SocketException {

@@ -342,13 +342,15 @@ class _TeacherPinSheetState extends State<_TeacherPinSheet> {
 
     return Padding(
       padding: EdgeInsets.only(bottom: bottomInset),
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(
-          Sik3Spacing.lg,
-          Sik3Spacing.lg,
-          Sik3Spacing.lg,
-          Sik3Spacing.xl,
-        ),
+      child: SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(
+            Sik3Spacing.lg,
+            Sik3Spacing.lg,
+            Sik3Spacing.lg,
+            Sik3Spacing.xl,
+          ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -505,6 +507,7 @@ class _TeacherPinSheetState extends State<_TeacherPinSheet> {
               child: const Text('Batal'),
             ),
           ],
+        ),
         ),
       ),
     );

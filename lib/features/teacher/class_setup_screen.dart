@@ -1430,13 +1430,15 @@ class _TeacherProfileSheetState extends State<_TeacherProfileSheet> {
 
     return Padding(
       padding: EdgeInsets.only(bottom: bottomInset),
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(
-          Sik3Spacing.lg,
-          Sik3Spacing.lg,
-          Sik3Spacing.lg,
-          Sik3Spacing.xl,
-        ),
+      child: SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(
+            Sik3Spacing.lg,
+            Sik3Spacing.lg,
+            Sik3Spacing.lg,
+            Sik3Spacing.xl,
+          ),
         child: Form(
           key: _formKey,
           autovalidateMode: _submittedOnce
@@ -1537,6 +1539,7 @@ class _TeacherProfileSheetState extends State<_TeacherProfileSheet> {
             ],
           ),
         ),
+        ),
       ),
     );
   }
@@ -1633,13 +1636,15 @@ class _ClassFormSheetState extends State<_ClassFormSheet> {
 
     return Padding(
       padding: EdgeInsets.only(bottom: bottomInset),
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(
-          Sik3Spacing.lg,
-          Sik3Spacing.lg,
-          Sik3Spacing.lg,
-          Sik3Spacing.xl,
-        ),
+      child: SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(
+            Sik3Spacing.lg,
+            Sik3Spacing.lg,
+            Sik3Spacing.lg,
+            Sik3Spacing.xl,
+          ),
         child: Form(
           key: _formKey,
           autovalidateMode: _submittedOnce
@@ -1753,6 +1758,7 @@ class _ClassFormSheetState extends State<_ClassFormSheet> {
               ),
             ],
           ),
+        ),
         ),
       ),
     );
@@ -1923,13 +1929,15 @@ class _StartSessionSubjectSheetState extends State<_StartSessionSubjectSheet> {
 
     return Padding(
       padding: EdgeInsets.only(bottom: bottomInset),
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(
-          Sik3Spacing.lg,
-          Sik3Spacing.lg,
-          Sik3Spacing.lg,
-          Sik3Spacing.xl,
-        ),
+      child: SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(
+            Sik3Spacing.lg,
+            Sik3Spacing.lg,
+            Sik3Spacing.lg,
+            Sik3Spacing.xl,
+          ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1982,6 +1990,7 @@ class _StartSessionSubjectSheetState extends State<_StartSessionSubjectSheet> {
               child: const Text('Batal'),
             ),
           ],
+        ),
         ),
       ),
     );

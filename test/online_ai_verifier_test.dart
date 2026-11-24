@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -237,8 +238,55 @@ void main() {
         expect(result, isA<VerifyFailure>());
         final failure = result as VerifyFailure;
         expect(failure.isTimeout, isTrue);
-        expect(failure.message, isNotEmpty);
+        expect(failure.message, contains('40 ms'));
         expect(emojiRegex.hasMatch(failure.message), isFalse);
+
+        final verifier3s = OnlineAiVerifier(
+          client: MockClient((_) async {
+            throw TimeoutException('Simulated 3s timeout');
+          }),
+          timeout: const Duration(seconds: 3),
+        );
+        final res3s = await verifier3s.verify(
+          upperPhotoPath: upperPhoto.path,
+          lowerPhotoPath: null,
+          requiredItems: const <ApdItem>{ApdItem.helm},
+          endpointUrl: 'https://sik3-verify.vercel.app/api/verify-apd',
+        );
+        expect(res3s, isA<VerifyFailure>());
+        final failure3s = res3s as VerifyFailure;
+        expect(failure3s.isTimeout, isTrue);
+        expect(failure3s.message, contains('3 detik'));
+      },
+    );
+
+    test(
+      'maps_http_504_and_408_to_timeout_verify_failure_without_throwing',
+      () async {
+        for (final statusCode in const <int>[504, 408]) {
+          final timeoutClient = MockClient(
+            (_) async => http.Response(
+              jsonEncode(<String, String>{'error': 'Gateway Timeout'}),
+              statusCode,
+            ),
+          );
+          final verifier = OnlineAiVerifier(
+            client: timeoutClient,
+            timeout: const Duration(seconds: 7),
+          );
+          final result = await verifier.verify(
+            upperPhotoPath: upperPhoto.path,
+            lowerPhotoPath: null,
+            requiredItems: const <ApdItem>{ApdItem.helm},
+            endpointUrl: 'https://sik3-verify.vercel.app/api/verify-apd',
+          );
+
+          expect(result, isA<VerifyFailure>());
+          final failure = result as VerifyFailure;
+          expect(failure.isTimeout, isTrue, reason: 'HTTP $statusCode must map to isTimeout: true');
+          expect(failure.message, contains('7 detik'));
+          expect(emojiRegex.hasMatch(failure.message), isFalse);
+        }
       },
     );
 

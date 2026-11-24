@@ -18,6 +18,7 @@ import 'package:sik3/data/qr_identity_codec.dart';
 import 'package:sik3/features/teacher/apd_zone_scan_screen.dart';
 import 'package:sik3/features/teacher/class_setup_screen.dart';
 import 'package:sik3/features/teacher/review_draft_screen.dart';
+import 'package:sik3/ml/online_ai_verifier.dart';
 import 'package:sik3/ml/ppe_label_config.dart';
 import 'package:sik3/ml/tflite_ppe_detector.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -49,6 +50,95 @@ class _FakePpeDetector implements PpeDetector {
   @override
   Future<void> dispose() async {
     disposed = true;
+  }
+}
+
+class _DelegatingSlowDatabase implements AppDatabase {
+  _DelegatingSlowDatabase(
+    this._inner, {
+    this.beforeGetSessionRecords,
+    this.beforeUpsertScanRecord,
+  });
+
+  final AppDatabase _inner;
+  final Future<void> Function()? beforeGetSessionRecords;
+  final Future<void> Function()? beforeUpsertScanRecord;
+
+  @override
+  Database get rawDatabase => _inner.rawDatabase;
+
+  @override
+  Future<void> close() => _inner.close();
+
+  @override
+  Future<int> upsertClass(SchoolClass schoolClass) =>
+      _inner.upsertClass(schoolClass);
+
+  @override
+  Future<List<SchoolClass>> getClasses() => _inner.getClasses();
+
+  @override
+  Future<void> deleteClass(int classId) => _inner.deleteClass(classId);
+
+  @override
+  Future<int> createSession(InspectionSession session) =>
+      _inner.createSession(session);
+
+  @override
+  Future<List<InspectionSession>> getSessionsForClass(int classId) =>
+      _inner.getSessionsForClass(classId);
+
+  @override
+  Future<InspectionSession?> getSession(int sessionId) =>
+      _inner.getSession(sessionId);
+
+  @override
+  Future<void> updateSessionStatus(int sessionId, String status) =>
+      _inner.updateSessionStatus(sessionId, status);
+
+  @override
+  Future<int> upsertScanRecord(ScanRecord record) async {
+    if (beforeUpsertScanRecord != null) {
+      await beforeUpsertScanRecord!();
+    }
+    return _inner.upsertScanRecord(record);
+  }
+
+  @override
+  Future<List<ScanRecord>> getSessionRecords(int sessionId) async {
+    if (beforeGetSessionRecords != null) {
+      await beforeGetSessionRecords!();
+    }
+    return _inner.getSessionRecords(sessionId);
+  }
+
+  @override
+  Future<void> deleteScanRecord(int recordId) =>
+      _inner.deleteScanRecord(recordId);
+
+  @override
+  Future<int> purgeSessionPhotos(int sessionId) =>
+      _inner.purgeSessionPhotos(sessionId);
+
+  @override
+  Future<void> deleteSession(int sessionId) => _inner.deleteSession(sessionId);
+}
+
+class _CountingStubOnlineAiVerifier extends OnlineAiVerifier {
+  _CountingStubOnlineAiVerifier(this._handler);
+
+  final Future<OnlineVerifyResult> Function() _handler;
+  int callCount = 0;
+
+  @override
+  Future<OnlineVerifyResult> verify({
+    required String? upperPhotoPath,
+    required String? lowerPhotoPath,
+    required Set<ApdItem> requiredItems,
+    required String endpointUrl,
+  }) {
+    callCount += 1;
+    return _handler();
   }
 }
 
@@ -970,6 +1060,167 @@ void main() {
           find.text('Berkas foto tidak ditemukan atau sudah dibersihkan.'),
           findsOneWidget,
         );
+      },
+    );
+
+    testWidgets(
+      'locks Ekspor PDF and Scan Siswa bottom bar actions while initial _loading is in flight',
+      (tester) async {
+        final realDb = await openMemoryDb();
+        addTearDown(realDb.close);
+        final seeded = await seedClassAndSession(realDb);
+
+        final loadCompleter = Completer<void>();
+        final slowDb = _DelegatingSlowDatabase(
+          realDb,
+          beforeGetSessionRecords: () => loadCompleter.future,
+        );
+        var exportCalls = 0;
+        var scanCalls = 0;
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSik3Theme(),
+            home: ReviewDraftScreen(
+              schoolClass: seeded.schoolClass,
+              session: seeded.session,
+              database: slowDb,
+              openQrScanner: (_, {defaultClassName}) async {
+                scanCalls += 1;
+                return null;
+              },
+              onExportPdf: (_, _, _, _) async {
+                exportCalls += 1;
+              },
+            ),
+          ),
+        );
+        await tester.pump();
+
+        // While initial _loading is true, bottom bar buttons must be disabled.
+        final exportBtn = tester.widget<OutlinedButton>(
+          find.byKey(const ValueKey<String>('export_pdf_button')),
+        );
+        final scanBtn = tester.widget<FilledButton>(
+          find.byKey(const ValueKey<String>('scan_student_button')),
+        );
+        expect(exportBtn.onPressed, isNull);
+        expect(scanBtn.onPressed, isNull);
+
+        await tester.tap(find.byKey(const ValueKey<String>('export_pdf_button')));
+        await tester.tap(find.byKey(const ValueKey<String>('scan_student_button')));
+        await tester.pump();
+
+        expect(exportCalls, 0);
+        expect(scanCalls, 0);
+
+        loadCompleter.complete();
+        await tester.pumpAndSettle();
+
+        expect(
+          tester
+              .widget<OutlinedButton>(
+                find.byKey(const ValueKey<String>('export_pdf_button')),
+              )
+              .onPressed,
+          isNotNull,
+        );
+      },
+    );
+
+    testWidgets(
+      'double-tapping Verifikasi AI during an in-flight chip write does not trigger duplicate calls',
+      (tester) async {
+        final realDb = await openMemoryDb();
+        addTearDown(realDb.close);
+        final seeded = await seedClassAndSession(
+          realDb,
+          requiredApd: const <ApdItem>{ApdItem.helm},
+        );
+        final sessionId = seeded.session.id!;
+
+        final tempDir = Directory.systemTemp.createTempSync('sik3_double_tap_');
+        addTearDown(() {
+          if (tempDir.existsSync()) {
+            tempDir.deleteSync(recursive: true);
+          }
+        });
+        final upperPhoto = File(p.join(tempDir.path, 'upper.jpg'))
+          ..writeAsBytesSync(_createSampleJpgBytes(width: 200, height: 150));
+
+        await realDb.upsertScanRecord(
+          ScanRecord(
+            sessionId: sessionId,
+            nisn: '0081000001',
+            attendanceNo: '01',
+            studentName: 'Hadi Kusuma',
+            apdResults: const <ApdItem, ApdCheckResult>{
+              ApdItem.helm: ApdCheckResult(
+                item: ApdItem.helm,
+                status: ApdStatus.needsReview,
+              ),
+            },
+            upperPhotoPath: upperPhoto.path,
+            scannedAt: DateTime(2026, 11, 24, 9, 0),
+          ),
+        );
+
+        var gateWrites = false;
+        final writeCompleter = Completer<void>();
+        final slowDb = _DelegatingSlowDatabase(
+          realDb,
+          beforeUpsertScanRecord: () async {
+            if (gateWrites) {
+              await writeCompleter.future;
+            }
+          },
+        );
+
+        final verifier = _CountingStubOnlineAiVerifier(
+          () async => const VerifyFailure('Simulasi selesai'),
+        );
+
+        tester.view.physicalSize = const Size(420, 1000);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSik3Theme(),
+            home: ReviewDraftScreen(
+              schoolClass: seeded.schoolClass,
+              session: seeded.session,
+              database: slowDb,
+              aiEndpointUrl: 'https://sik3-verify.vercel.app/api/verify-apd',
+              aiVerifier: verifier,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // Start a chip write and keep it in flight.
+        gateWrites = true;
+        await tester.tap(
+          find.byKey(const ValueKey<String>('apd_chip_0081000001_helm')),
+        );
+        await tester.pump();
+
+        // Double-tap Verifikasi AI while chip write is still in flight.
+        final aiBtnFinder = find.byKey(
+          const ValueKey<String>('verify_ai_0081000001'),
+        );
+        await tester.tap(aiBtnFinder);
+        await tester.pump();
+        await tester.tap(aiBtnFinder);
+        await tester.pump();
+
+        // Unblock the pending chip write and let verification complete.
+        gateWrites = false;
+        writeCompleter.complete();
+        await tester.pumpAndSettle();
+
+        expect(verifier.callCount, 1);
       },
     );
   });

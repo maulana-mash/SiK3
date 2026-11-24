@@ -285,7 +285,7 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
   }
 
   Future<void> _scanNewStudent() async {
-    if (_busyAction || _verifyingNisn != null) return;
+    if (_loading || _busyAction || _verifyingNisn != null) return;
     setState(() => _busyAction = true);
     try {
       final qrOpener = widget.openQrScanner ?? openStudentQrScanner;
@@ -358,7 +358,12 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
   }
 
   Future<void> _verifyStudentWithAi(ScanRecord record) async {
-    if (!_hasAiVerification || _busyAction || _verifyingNisn != null) return;
+    if (!_hasAiVerification ||
+        _loading ||
+        _busyAction ||
+        _verifyingNisn != null) {
+      return;
+    }
 
     final callback = widget.onVerifyWithAi;
     if (callback != null) {
@@ -384,21 +389,22 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
       return;
     }
 
-    await _drainPendingWrites();
-    if (!mounted) return;
-    final latestIdx = _records.indexWhere((r) => r.nisn == record.nisn);
-    final target = latestIdx >= 0 ? _records[latestIdx] : record;
-
-    if (target.upperPhotoPath == null && target.lowerPhotoPath == null) {
-      _showSnackBar(
-        'Foto bukti siswa belum tersedia atau sudah dibersihkan. Lakukan Scan Ulang terlebih dahulu.',
-      );
-      return;
-    }
-
-    setState(() => _verifyingNisn = target.nisn);
+    setState(() => _verifyingNisn = record.nisn);
+    late final ScanRecord target;
     OnlineVerifyResult? verifyResult;
     try {
+      await _drainPendingWrites();
+      if (!mounted) return;
+      final latestIdx = _records.indexWhere((r) => r.nisn == record.nisn);
+      target = latestIdx >= 0 ? _records[latestIdx] : record;
+
+      if (target.upperPhotoPath == null && target.lowerPhotoPath == null) {
+        _showSnackBar(
+          'Foto bukti siswa belum tersedia atau sudah dibersihkan. Lakukan Scan Ulang terlebih dahulu.',
+        );
+        return;
+      }
+
       final verifier = widget.aiVerifier ?? OnlineAiVerifier();
       verifyResult = await verifier.verify(
         upperPhotoPath: target.upperPhotoPath,
@@ -480,7 +486,7 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
   }
 
   Future<void> _confirmPurgeDraftPhotos() async {
-    if (_busyAction || _verifyingNisn != null) return;
+    if (_loading || _busyAction || _verifyingNisn != null) return;
     if (!_hasAnyDraftPhotos) {
       _showSnackBar('Belum ada foto draft yang tersimpan pada sesi ini.');
       return;
@@ -539,7 +545,7 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
   }
 
   Future<void> _handleExportPdf() async {
-    if (_busyAction || _verifyingNisn != null) return;
+    if (_loading || _busyAction || _verifyingNisn != null) return;
     setState(() => _busyAction = true);
     try {
       await _drainPendingWrites();
@@ -617,7 +623,7 @@ class _ReviewDraftScreenState extends State<ReviewDraftScreen> {
     }
 
     final isExported = _session.status == 'exported';
-    final isActionLocked = _busyAction || _verifyingNisn != null;
+    final isActionLocked = _loading || _busyAction || _verifyingNisn != null;
 
     return Scaffold(
       backgroundColor: Sik3Colors.surfaceLight,
@@ -1491,13 +1497,15 @@ class _EvidencePhotoViewerSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(
-        Sik3Spacing.lg,
-        Sik3Spacing.lg,
-        Sik3Spacing.lg,
-        Sik3Spacing.xl,
-      ),
+    return SafeArea(
+      top: false,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(
+          Sik3Spacing.lg,
+          Sik3Spacing.lg,
+          Sik3Spacing.lg,
+          Sik3Spacing.xl,
+        ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1562,6 +1570,7 @@ class _EvidencePhotoViewerSheet extends StatelessWidget {
               ),
             ),
         ],
+      ),
       ),
     );
   }

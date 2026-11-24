@@ -190,8 +190,15 @@ class _ApdZoneScanScreenState extends State<ApdZoneScanScreen>
 
     if (state == AppLifecycleState.inactive) {
       final controller = _cameraController;
-      _cameraController = null;
-      _torchOn = false;
+      if (mounted) {
+        setState(() {
+          _cameraController = null;
+          _torchOn = false;
+        });
+      } else {
+        _cameraController = null;
+        _torchOn = false;
+      }
       if (controller != null) {
         unawaited(_disposeCameraSafely(controller));
       }
