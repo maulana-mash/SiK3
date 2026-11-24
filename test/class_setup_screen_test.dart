@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -382,6 +384,209 @@ void main() {
           countText.style?.fontFeatures,
           contains(const FontFeature.tabularFigures()),
         );
+      },
+    );
+
+    testWidgets(
+      'rapid double APD toggle ignores stale saveClass response when first resolves after second',
+      (tester) async {
+        final prefs = await LocalPrefs.open();
+        final completers = <Completer<SchoolClass>>[];
+        final payloads = <SchoolClass>[];
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSik3Theme(),
+            home: ClassSetupScreen(
+              prefs: prefs,
+              onSwitchRole: () {},
+              loadClasses: () async => <SchoolClass>[
+                SchoolClass(
+                  id: 1,
+                  name: 'XI TPM 1',
+                  homeroomTeacher: 'Pak Budi',
+                  requiredApd: ApdItem.values.toSet(),
+                ),
+              ],
+              saveClass: (schoolClass) {
+                final completer = Completer<SchoolClass>();
+                completers.add(completer);
+                payloads.add(schoolClass);
+                return completer.future;
+              },
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('6/6 Wajib'), findsOneWidget);
+
+        // Rapidly toggle two APD items before any save resolves.
+        final bajuToggle = find.byKey(
+          const ValueKey<String>('apd_toggle_baju_praktik'),
+        );
+        final helmToggle = find.byKey(
+          const ValueKey<String>('apd_toggle_helm'),
+        );
+        await tester.ensureVisible(bajuToggle);
+        await tester.tap(bajuToggle);
+        await tester.pump();
+
+        await tester.ensureVisible(helmToggle);
+        await tester.tap(helmToggle);
+        await tester.pump();
+
+        expect(completers, hasLength(2));
+        expect(find.text('4/6 Wajib'), findsOneWidget);
+
+        // Resolve the SECOND call first, then the STALE first call later.
+        completers[1].complete(payloads[1]);
+        await tester.pumpAndSettle();
+        expect(find.text('4/6 Wajib'), findsOneWidget);
+
+        completers[0].complete(payloads[0]);
+        await tester.pumpAndSettle();
+
+        // Both toggles must remain preserved (4/6 Wajib, NOT reverted to 5/6 Wajib).
+        expect(find.text('4/6 Wajib'), findsOneWidget);
+        expect(find.text('4/6 APD'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'handles persistence failures cleanly in APD toggle, save class, and delete class without unhandled errors',
+      (tester) async {
+        final prefs = await LocalPrefs.open();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSik3Theme(),
+            home: ClassSetupScreen(
+              prefs: prefs,
+              onSwitchRole: () {},
+              loadClasses: () async => <SchoolClass>[
+                SchoolClass(
+                  id: 1,
+                  name: 'XI TKR 1',
+                  homeroomTeacher: 'Pak Joko',
+                  requiredApd: ApdItem.values.toSet(),
+                ),
+              ],
+              saveClass: (_) async {
+                throw Exception('SQLite write failed');
+              },
+              deleteClass: (_) async {
+                throw Exception('SQLite delete failed');
+              },
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // 1. APD toggle failure rolls back optimistic state & shows SnackBar.
+        final bajuToggle = find.byKey(
+          const ValueKey<String>('apd_toggle_baju_praktik'),
+        );
+        await tester.ensureVisible(bajuToggle);
+        await tester.tap(bajuToggle);
+        await tester.pumpAndSettle();
+
+        expect(tester.takeException(), isNull);
+        expect(find.text('6/6 Wajib'), findsOneWidget);
+        expect(
+          find.text('Gagal menyimpan perubahan APD wajib. Perubahan dibatalkan.'),
+          findsOneWidget,
+        );
+
+        // 2. Save new class failure keeps list unchanged & shows SnackBar.
+        final addClassButton = find.byKey(
+          const ValueKey<String>('add_class_button'),
+        );
+        await tester.ensureVisible(addClassButton);
+        await tester.tap(addClassButton);
+        await tester.pumpAndSettle();
+
+        await tester.enterText(
+          find.byKey(const ValueKey<String>('class_name_field')),
+          'XII GAGAL',
+        );
+        await tester.enterText(
+          find.byKey(const ValueKey<String>('homeroom_teacher_field')),
+          'Bu Sari',
+        );
+        final saveClassButton = find.byKey(
+          const ValueKey<String>('class_form_save_button'),
+        );
+        await tester.ensureVisible(saveClassButton);
+        await tester.tap(saveClassButton);
+        await tester.pumpAndSettle();
+
+        expect(tester.takeException(), isNull);
+        expect(find.text('XII GAGAL'), findsNothing);
+        expect(
+          find.text('Gagal menyimpan data kelas. Silakan coba lagi.'),
+          findsOneWidget,
+        );
+
+        // 3. Delete class failure keeps class intact & shows SnackBar.
+        final deleteButton = find.byKey(const ValueKey<String>('delete_class_1'));
+        await tester.ensureVisible(deleteButton);
+        await tester.tap(deleteButton);
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Hapus'));
+        await tester.pumpAndSettle();
+
+        expect(tester.takeException(), isNull);
+        expect(find.text('XI TKR 1'), findsWidgets);
+        expect(
+          find.text('Gagal menghapus kelas. Silakan coba lagi.'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'rejects empty-host AI endpoint URLs like https:// and http:///path in teacher profile sheet',
+      (tester) async {
+        final prefs = await LocalPrefs.open();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildSik3Theme(),
+            home: ClassSetupScreen(
+              prefs: prefs,
+              onSwitchRole: () {},
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.tap(
+          find.byKey(const ValueKey<String>('teacher_profile_settings_button')),
+        );
+        await tester.pumpAndSettle();
+
+        final urlField = find.byKey(
+          const ValueKey<String>('teacher_profile_ai_url_field'),
+        );
+        final saveButton = find.byKey(
+          const ValueKey<String>('teacher_profile_save_button'),
+        );
+
+        for (final invalidUrl in const <String>['https://', 'http:///path']) {
+          await tester.enterText(urlField, invalidUrl);
+          await tester.ensureVisible(saveButton);
+          await tester.tap(saveButton);
+          await tester.pumpAndSettle();
+
+          expect(
+            find.text('URL harus diawali http:// atau https:// yang valid.'),
+            findsOneWidget,
+          );
+          expect(find.text('Profil Guru & Pengaturan AI'), findsOneWidget);
+          expect(prefs.getTeacherProfile().aiEndpointUrl, isEmpty);
+        }
       },
     );
   });

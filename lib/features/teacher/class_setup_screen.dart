@@ -52,6 +52,10 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
   int _nextMemoryId = 1;
   String? _sessionError;
 
+  final Map<int, int> _classSaveSeq = <int, int>{};
+  final Map<int, int> _lastPersistedSeqByClass = <int, int>{};
+  final Map<int, SchoolClass> _lastPersistedByClass = <int, SchoolClass>{};
+
   @override
   void initState() {
     super.initState();
@@ -109,6 +113,13 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
         _classes = normalized;
         _selectedClassId = nextSelected;
         _loading = false;
+        _lastPersistedByClass
+          ..clear()
+          ..addEntries(
+            normalized
+                .where((c) => c.id != null)
+                .map((c) => MapEntry<int, SchoolClass>(c.id!, c)),
+          );
       });
     } catch (_) {
       if (mounted) {
@@ -126,6 +137,18 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
       return schoolClass;
     }
     return schoolClass.copyWith(id: _nextMemoryId++);
+  }
+
+  void _showErrorSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: Sik3Colors.statusMissing,
+        ),
+      );
   }
 
   Future<void> _toggleApdItem(ApdItem item) async {
@@ -147,7 +170,15 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
       return;
     }
 
+    final classId = selected.id;
     final updated = selected.copyWith(requiredApd: nextSet);
+    int? seq;
+    if (classId != null) {
+      _lastPersistedByClass.putIfAbsent(classId, () => selected);
+      seq = (_classSaveSeq[classId] ?? 0) + 1;
+      _classSaveSeq[classId] = seq;
+    }
+
     setState(() {
       _classes = _classes
           .map((c) => c.id == updated.id ? updated : c)
@@ -157,13 +188,47 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
       }
     });
 
-    final saved = await _persistClass(updated);
-    if (!mounted) return;
-    setState(() {
-      _classes = _classes
-          .map((c) => c.id == saved.id ? saved : c)
-          .toList(growable: false);
-    });
+    try {
+      final saved = await _persistClass(updated);
+      if (!mounted) return;
+
+      if (classId != null) {
+        final persistedSeq = _lastPersistedSeqByClass[classId] ?? 0;
+        if (seq != null && seq > persistedSeq) {
+          _lastPersistedSeqByClass[classId] = seq;
+          _lastPersistedByClass[classId] = saved;
+        }
+        if (seq != _classSaveSeq[classId]) {
+          // A newer toggle has superseded this response; keep newer UI state.
+          return;
+        }
+      }
+
+      if (!_classes.any((c) => c.id == saved.id)) return;
+
+      setState(() {
+        _classes = _classes
+            .map((c) => c.id == saved.id ? saved : c)
+            .toList(growable: false);
+      });
+    } catch (_) {
+      if (!mounted) return;
+      if (classId != null && seq != _classSaveSeq[classId]) {
+        // Ignore stale failure when a newer mutation is already active/applied.
+        return;
+      }
+      final fallback = classId != null
+          ? (_lastPersistedByClass[classId] ?? selected)
+          : selected;
+      setState(() {
+        _classes = _classes
+            .map((c) => c.id == fallback.id ? fallback : c)
+            .toList(growable: false);
+      });
+      _showErrorSnackBar(
+        'Gagal menyimpan perubahan APD wajib. Perubahan dibatalkan.',
+      );
+    }
   }
 
   Future<void> _openTeacherProfileSheet() async {
@@ -220,6 +285,13 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
     try {
       final saved = await _persistClass(draftResult);
       if (!mounted) return;
+      final savedId = saved.id;
+      if (savedId != null) {
+        final nextSeq = (_classSaveSeq[savedId] ?? 0) + 1;
+        _classSaveSeq[savedId] = nextSeq;
+        _lastPersistedSeqByClass[savedId] = nextSeq;
+        _lastPersistedByClass[savedId] = saved;
+      }
       final nextList = List<SchoolClass>.from(_classes);
       final existingIndex = nextList.indexWhere((c) => c.id == saved.id);
       if (existingIndex >= 0) {
@@ -232,6 +304,8 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
         _selectedClassId = saved.id;
         _draftRequiredApd = Set<ApdItem>.from(saved.requiredApd);
       });
+    } catch (_) {
+      _showErrorSnackBar('Gagal menyimpan data kelas. Silakan coba lagi.');
     } finally {
       if (mounted) {
         setState(() => _savingClass = false);
@@ -267,10 +341,21 @@ class _ClassSetupScreenState extends State<ClassSetupScreen> {
     if (confirmed != true || !mounted) return;
 
     final classId = schoolClass.id;
-    if (classId != null && widget.deleteClass != null) {
-      await widget.deleteClass!(classId);
+    try {
+      if (classId != null && widget.deleteClass != null) {
+        await widget.deleteClass!(classId);
+      }
+    } catch (_) {
+      _showErrorSnackBar('Gagal menghapus kelas. Silakan coba lagi.');
+      return;
     }
     if (!mounted) return;
+
+    if (classId != null) {
+      _classSaveSeq.remove(classId);
+      _lastPersistedSeqByClass.remove(classId);
+      _lastPersistedByClass.remove(classId);
+    }
 
     final nextList = _classes
         .where((c) => c.id != schoolClass.id)
@@ -1148,7 +1233,8 @@ class _TeacherProfileSheetState extends State<_TeacherProfileSheet> {
                   final uri = Uri.tryParse(trimmed);
                   if (uri == null ||
                       !(uri.scheme == 'http' || uri.scheme == 'https') ||
-                      !uri.hasAuthority) {
+                      !uri.hasAuthority ||
+                      uri.host.trim().isEmpty) {
                     return 'URL harus diawali http:// atau https:// yang valid.';
                   }
                   return null;
