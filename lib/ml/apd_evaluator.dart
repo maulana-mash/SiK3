@@ -48,7 +48,8 @@ class ApdEvaluator {
   /// Strictly enforces:
   /// 1. Only items in [requiredItems] are included in the returned map.
   /// 2. [ScanZone.upper] items read [upperDetections]; [ScanZone.lower] items read [lowerDetections].
-  /// 3. Items absent from `config.supportedItems` evaluate to [ApdStatus.needsReview] (`confidence: null`).
+  /// 3. When [modelAvailable] is `false` or an item is absent from `config.supportedItems`,
+  ///    items evaluate to [ApdStatus.needsReview] (`confidence: null`), never [ApdStatus.missing].
   /// 4. Supported items with `maxConfidence >= threshold` become [ApdStatus.detected];
   ///    scores `< threshold` become [ApdStatus.needsReview]; zero detections become [ApdStatus.missing] (`0.0`).
   static Map<ApdItem, ApdCheckResult> evaluate({
@@ -57,6 +58,7 @@ class ApdEvaluator {
     required Set<ApdItem> requiredItems,
     required PpeLabelConfig config,
     double threshold = defaultThreshold,
+    bool modelAvailable = true,
   }) {
     final supported = config.supportedItems;
     final results = <ApdItem, ApdCheckResult>{};
@@ -64,7 +66,7 @@ class ApdEvaluator {
     for (final item in ApdItem.values) {
       if (!requiredItems.contains(item)) continue;
 
-      if (!supported.contains(item)) {
+      if (!modelAvailable || !supported.contains(item)) {
         results[item] = ApdCheckResult(
           item: item,
           status: ApdStatus.needsReview,

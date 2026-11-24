@@ -156,6 +156,52 @@ void main() {
       expect(validZoneResults[ApdItem.helm]?.status, ApdStatus.detected);
       expect(validZoneResults[ApdItem.sepatuBengkel]?.status, ApdStatus.detected);
     });
+
+    test('marks_all_required_items_needsReview_when_model_unavailable', () {
+      const requiredItems = <ApdItem>{
+        ApdItem.sepatuBengkel,
+        ApdItem.bajuPraktik,
+        ApdItem.helm,
+        ApdItem.kacamata,
+      };
+      final canonicalOrder =
+          ApdItem.values.where(requiredItems.contains).toList();
+
+      final emptyResults = ApdEvaluator.evaluate(
+        upperDetections: const <RawDetection>[],
+        lowerDetections: const <RawDetection>[],
+        requiredItems: requiredItems,
+        config: standardConfig,
+        modelAvailable: false,
+      );
+
+      expect(emptyResults.keys.toList(), equals(canonicalOrder));
+      for (final item in requiredItems) {
+        expect(emptyResults[item]?.status, ApdStatus.needsReview);
+        expect(emptyResults[item]?.confidence, isNull);
+      }
+
+      // Even if stray/non-empty detections are passed, unavailable model must
+      // force every required item to needsReview (never detected/missing).
+      final nonEmptyResults = ApdEvaluator.evaluate(
+        upperDetections: const <RawDetection>[
+          RawDetection(label: 'helmet', confidence: 0.95),
+          RawDetection(label: 'goggles', confidence: 0.88),
+        ],
+        lowerDetections: const <RawDetection>[
+          RawDetection(label: 'boots', confidence: 0.92),
+        ],
+        requiredItems: requiredItems,
+        config: standardConfig,
+        modelAvailable: false,
+      );
+
+      expect(nonEmptyResults.keys.toList(), equals(canonicalOrder));
+      for (final item in requiredItems) {
+        expect(nonEmptyResults[item]?.status, ApdStatus.needsReview);
+        expect(nonEmptyResults[item]?.confidence, isNull);
+      }
+    });
   });
 
   group('PpeLabelConfig & Model Assets', () {
@@ -390,10 +436,10 @@ void main() {
       expect(loadedConfig.modelClassNames, hasLength(5));
       expect(loadedConfig.supportedItems.contains(ApdItem.bajuPraktik), isFalse);
 
-      final detector = await TflitePpeDetector.create();
+      final PpeDetector detector = await TflitePpeDetector.create();
       expect(detector.isModelLoaded, isFalse);
       expect(
-        detector.labelConfig.supportedItems,
+        (detector as TflitePpeDetector).labelConfig.supportedItems,
         equals(loadedConfig.supportedItems),
       );
 

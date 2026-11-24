@@ -14,6 +14,7 @@ export 'package:sik3/ml/apd_evaluator.dart' show RawDetection;
 
 /// Offline object detector contract for scanning workshop APD photos.
 abstract class PpeDetector {
+  bool get isModelLoaded;
   Future<List<RawDetection>> detectFile(String imagePath);
   Future<void> dispose();
 }
@@ -69,6 +70,7 @@ class TflitePpeDetector implements PpeDetector {
   bool _disposed = false;
 
   /// True only when a valid TFLite FlatBuffer model and native runtime loaded cleanly.
+  @override
   bool get isModelLoaded => _isModelLoaded;
 
   PpeLabelConfig get labelConfig => _labelConfig;
