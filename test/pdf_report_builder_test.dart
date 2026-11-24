@@ -410,9 +410,12 @@ void main() {
       // Zero emoji anywhere in generated PDF.
       expect(emojiRegex.hasMatch(parsed.fullText), isFalse);
 
-      // Boundary check across multiple student counts (24..28 & 45):
-      // ensures the signature block NEVER splits across page boundaries.
-      for (final count in const <int>[24, 25, 26, 27, 28, 45]) {
+      // Boundary check across student counts 18..28 & 45:
+      // ensures the closing summary strip + signature block stays strictly
+      // inseparable on a single page and never orphans signatures.
+      for (final count in const <int>[
+        18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 45,
+      ]) {
         final sample = List<ScanRecord>.generate(count, (i) {
           return _makeRecord(
             sessionId: 20,
@@ -431,30 +434,47 @@ void main() {
         final sigPage = parsedSample.pageTexts.last;
         expect(
           sigPage,
+          contains('Total Siswa'),
+          reason:
+              'Summary strip must stay on same page as signatures for $count students',
+        );
+        expect(
+          sigPage,
           contains('Guru Mata Pelajaran'),
-          reason: 'Signature left role must stay intact on last page for $count students',
+          reason:
+              'Signature left role must stay intact on last page for $count students',
         );
         expect(
           sigPage,
           contains('Wali Kelas'),
-          reason: 'Signature right role must stay intact on last page for $count students',
+          reason:
+              'Signature right role must stay intact on last page for $count students',
         );
         expect(
           sigPage,
           contains('NIP. 198208102010011009'),
-          reason: 'Teacher NIP must stay on same page as signature header for $count students',
+          reason:
+              'Teacher NIP must stay on same page as signature header for $count students',
         );
         expect(
           sigPage,
           contains('NIP. 197506152003122004'),
-          reason: 'Homeroom NIP must stay on same page as signature header for $count students',
+          reason:
+              'Homeroom NIP must stay on same page as signature header for $count students',
         );
-        // Ensure signature header did not leak onto an earlier page.
+        // Ensure neither summary strip nor signature header split onto an earlier page.
         for (var p = 0; p < parsedSample.pageCount - 1; p++) {
           expect(
             parsedSample.pageTexts[p],
+            isNot(contains('Total Siswa')),
+            reason:
+                'Summary strip must not split onto page ${p + 1} ahead of signatures for $count students',
+          );
+          expect(
+            parsedSample.pageTexts[p],
             isNot(contains('Guru Mata Pelajaran')),
-            reason: 'Signature block must not start on page ${p + 1} and split for $count students',
+            reason:
+                'Signature block must not start on page ${p + 1} and split for $count students',
           );
         }
       }
@@ -704,7 +724,7 @@ void main() {
     );
 
     testWidgets(
-      'PdfPreviewScreen renders cleanly on 360x640 with 1.3x text scale',
+      'PdfPreviewScreen renders cleanly on 360x640 with 1.3x text scale and 48dp Android 15 bottom inset',
       (tester) async {
         tester.view.physicalSize = const Size(360, 640);
         tester.view.devicePixelRatio = 1.0;
@@ -729,16 +749,21 @@ void main() {
         );
 
         await tester.pumpWidget(
-          MediaQuery(
-            data: const MediaQueryData(textScaler: TextScaler.linear(1.3)),
-            child: MaterialApp(
-              theme: buildSik3Theme(),
-              home: PdfPreviewScreen(
-                schoolClass: cls,
-                session: session,
-                records: const <ScanRecord>[],
-                logoBytes: logoBytes,
+          MaterialApp(
+            theme: buildSik3Theme(),
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(context).copyWith(
+                padding: const EdgeInsets.only(bottom: 48),
+                viewPadding: const EdgeInsets.only(bottom: 48),
+                textScaler: const TextScaler.linear(1.3),
               ),
+              child: child!,
+            ),
+            home: PdfPreviewScreen(
+              schoolClass: cls,
+              session: session,
+              records: const <ScanRecord>[],
+              logoBytes: logoBytes,
             ),
           ),
         );
@@ -747,6 +772,30 @@ void main() {
 
         expect(tester.takeException(), isNull);
         expect(find.text('Pratinjau Laporan K3'), findsOneWidget);
+
+        // Print & Share action buttons must remain unclipped, >= 48x48dp, and
+        // fully above the 48dp Android 15 bottom system navigation bar (y <= 592).
+        final actionButtons = find.byType(IconButton);
+        expect(actionButtons, findsAtLeastNWidgets(2));
+        for (var i = 0; i < actionButtons.evaluate().length; i++) {
+          final rect = tester.getRect(actionButtons.at(i));
+          expect(
+            rect.width,
+            greaterThanOrEqualTo(48.0),
+            reason: 'PDF action button width must meet 48dp minimum touch target',
+          );
+          expect(
+            rect.height,
+            greaterThanOrEqualTo(48.0),
+            reason: 'PDF action button height must meet 48dp minimum touch target',
+          );
+          expect(
+            rect.bottom,
+            lessThanOrEqualTo(640.0 - 48.0),
+            reason:
+                'PDF action button must stay above the 48dp bottom system inset without clipping',
+          );
+        }
       },
     );
   });

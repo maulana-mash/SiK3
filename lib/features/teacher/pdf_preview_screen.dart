@@ -74,7 +74,6 @@ class PdfPreviewScreen extends StatelessWidget {
           backgroundColor: Sik3Colors.navy,
           iconColor: Colors.white,
           elevation: 0,
-          height: 60,
         ),
         build: (_) => PdfReportBuilder.build(
           session: session,

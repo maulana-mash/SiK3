@@ -148,7 +148,7 @@ class PdfReportBuilder {
           pw.SizedBox(height: 10),
           // Unbreakable closing block so summary metrics and Guru Mapel /
           // Wali Kelas signatures stay together and never split across pages.
-          pw.Container(
+          pw.Inseparable(
             child: pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.stretch,
               mainAxisSize: pw.MainAxisSize.min,
